@@ -13,7 +13,7 @@ set(INCLUDE_DIR
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/third_party/googletest/googletest/include)
 
-include_directories("~/CppSources/spdlog/include" "~/CppSources/tcp/include" "~/CppSources/rpc/include")
+include_directories("~/CppSources/spdlog/include" "~/CppSources/include")
 link_directories("~/CppSources/libs")
 
 include_directories(${INCLUDE_DIR})

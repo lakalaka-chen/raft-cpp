@@ -1,10 +1,10 @@
 
-#include "node.h"
+#include "comms_centre.h"
 
 namespace raft {
 
 
-RaftNode::RaftNode(std::string name, uint16_t port)
+CommsCentre::CommsCentre(std::string name, uint16_t port)
     : name_(std::move(name)), port_(port) {
     rpc_server_ = std::make_shared<Server>("[RPC Server]", port);
     rpc_server_->Register("Echo", [](const std::string &recv, std::string &reply){
@@ -16,14 +16,14 @@ RaftNode::RaftNode(std::string name, uint16_t port)
 }
 
 
-RaftNode::~RaftNode() {
+CommsCentre::~CommsCentre() {
     spdlog::info("{} is being deconstructing.", name_);
     CloseRPC();
     peers_.clear();
     pipes_with_peer_.clear();
 }
 
-void RaftNode::CloseRPC() {
+void CommsCentre::CloseRPC() {
     rpc_server_.reset();
 }
 
@@ -32,20 +32,23 @@ void RaftNode::CloseRPC() {
 //}
 
 
-void RaftNode::AddPeer(const std::string &name, const PeerInfo &peer) {
+void CommsCentre::AddPeer(const std::string &name, const PeerInfo &peer) {
     peers_[name] = peer;
     pipes_with_peer_[name] = std::make_shared<Client>();
 }
 
-bool RaftNode::Start() {
+bool CommsCentre::OpenService() {
     return rpc_server_->Start();
 }
 
 
-int RaftNode::ConnectTo(const std::string& dst) {
+int CommsCentre::ConnectTo(const std::string& dst) {
     int result = 0;
     if (dst.empty()) { // connect to all peers
         for (const auto& it: peers_) {
+            if (it.first == name_) {  // 不要连接自己
+                continue;
+            }
             result += _connect(it.first);
         }
     } else {
@@ -55,7 +58,7 @@ int RaftNode::ConnectTo(const std::string& dst) {
     return result;
 }
 
-bool RaftNode::_connect(const std::string &dst) {
+bool CommsCentre::_connect(const std::string &dst) {
     auto it = peers_.find(dst);
     if (it == peers_.end()) return false;
     auto pipe = pipes_with_peer_.find(dst);
@@ -64,8 +67,8 @@ bool RaftNode::_connect(const std::string &dst) {
 }
 
 
-bool RaftNode::Call(const std::string &peer_name, const std::string &method_name, const std::string &serialized_send,
-                    std::string &serialized_recv) {
+bool CommsCentre::Call(const std::string &peer_name, const std::string &method_name, const std::string &serialized_send,
+                       std::string &serialized_recv) {
     assert ( method_name == "Echo" ); // TODO: delete this line
     auto it = peers_.find(peer_name);
     if (it == peers_.end()) {

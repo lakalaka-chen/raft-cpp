@@ -23,8 +23,9 @@ struct PeerInfo {
 };
 
 
-class RaftNode {
-private:
+
+class CommsCentre {
+protected:
     std::unordered_map<std::string, PeerInfo> peers_;
     std::unordered_map<std::string, ClientPtr> pipes_with_peer_;
     ServerPtr rpc_server_;
@@ -32,12 +33,12 @@ private:
     uint16_t port_;
 
 public:
-    explicit RaftNode(std::string name, uint16_t port);
-    ~RaftNode();
+    explicit CommsCentre(std::string name, uint16_t port);
+    virtual ~CommsCentre();
 
     void AddPeer(const std::string &name, const PeerInfo &peer);
 
-    bool Start();
+    bool OpenService();
     int ConnectTo(const std::string& dst="");
 
     bool Call(

@@ -1,7 +1,7 @@
 
 #include "gtest/gtest.h"
 #include "rpc/rpc_server.h"
-#include "node.h"
+#include "comms_centre.h"
 
 #include <thread>
 #include <future>
@@ -10,10 +10,10 @@
 
 using namespace raft;
 
-using RaftNodePtr = std::shared_ptr<RaftNode>;
-using NodeFuture = std::future<RaftNodePtr>;
+using CommsCentrePtr = std::shared_ptr<CommsCentre>;
+using NodeFuture = std::future<CommsCentrePtr>;
 
-TEST(NodeTest, CommunicateTest) {
+TEST(CommsCentreTest, CommunicateTest) {
 
 
     int N = 8;
@@ -30,16 +30,16 @@ TEST(NodeTest, CommunicateTest) {
 
     std::vector<NodeFuture> node_futures(N);
 
-    auto create_node = [&](int id) -> RaftNodePtr {
-        RaftNodePtr node_ptr = std::make_shared<RaftNode>(names[id], ports[id]);
+    auto create_node = [&](int id) -> CommsCentrePtr {
+        CommsCentrePtr node_ptr = std::make_shared<CommsCentre>(names[id], ports[id]);
         for (int i = 0; i < N; i ++) {
             if (i != id) {
                 node_ptr->AddPeer(names[i], {"127.0.0.1", ports[i]});
             }
         }
-        bool success = node_ptr->Start();
+        bool success = node_ptr->OpenService();
         if (!success) {
-            spdlog::error("{} Start failed. ", names[id]);
+            spdlog::error("{} OpenService failed. ", names[id]);
             return nullptr;
         }
 
