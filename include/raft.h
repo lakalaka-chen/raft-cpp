@@ -23,7 +23,7 @@ using trigger_timer::TriggerTimer;
 using trigger_timer::CycleTimer;
 
 
-class Raft: public CommsCentre {
+class Raft: public CommsCentre, public std::enable_shared_from_this<Raft> {
 public:
     static const int ElectionTimeoutMin = 550;
     static const int ElectionTimeoutMax = 700;
@@ -52,10 +52,10 @@ private:
     int votes_to_me_;
 
     /// 处理时间的变量
-    int election_timeout_;  // 单位: ms
-    TimePoint last_recv_time_;
-    int heart_beat_timeout_; // 单位: ms
-    TimePoint last_heart_beat_time_;
+    int election_timeout_;              // 单位: ms
+    TimePoint last_recv_time_;          // 貌似没有意义
+    int heart_beat_timeout_;            // 单位: ms
+    TimePoint last_heart_beat_time_;    // 貌似没有意义
 
 
     TriggerTimer election_timeout_trigger_;  // 处理ElectionTimeOut
@@ -64,13 +64,17 @@ private:
 
 public:
     explicit Raft(std::string name, uint16_t port);
-    ~Raft();
+    ~Raft() override;
+    void TurnOn();
+    void AddPeer(const std::string &name, const PeerInfo &peer) override;
+
     std::tuple<int,int,bool> Start(const std::string &msg);
     void Kill();
     bool Killed();
-    std::pair<int ,bool> GetState() const;
+    std::pair<int ,bool> GetState();
 //    void Persist();
 //    void ReadPersist();
+
 
 
 protected:

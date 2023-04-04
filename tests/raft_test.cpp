@@ -15,12 +15,10 @@ TEST(RaftEndTest, CreateTest) {
         {"127.0.0.1", tcp::RandomPort()},
         {"127.0.0.1", tcp::RandomPort()},
         {"127.0.0.1", tcp::RandomPort()},
+        {"127.0.0.1", tcp::RandomPort()},
     };
     std::vector<std::string> peers_name {
-        "Raft Node 2",
-        "Raft Node 3",
-        "Raft Node 4",
-        "Raft Node 5",
+        "1", "2", "3", "4", "5",
     };
 
     std::string name = "Raft Node 1";

@@ -1,6 +1,7 @@
 
 #include "log_entry.h"
 #include <string>
+#include <sstream>
 
 namespace raft {
 
@@ -35,5 +36,16 @@ bool LogEntry::UpToDateOrSame(const LogEntry &other) const {
 bool LogEntry::EqualTo(const LogEntry &other) const {
     return term == other.term && index == other.index;
 }
+
+
+std::string LogEntry::Serialization() const {
+    std::ostringstream os;
+    os << index << " ";
+    os << term << " ";
+    os << command << " ";
+    return os.str();
+}
+
+
 
 }

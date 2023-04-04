@@ -36,7 +36,7 @@ public:
     explicit CommsCentre(std::string name, uint16_t port);
     virtual ~CommsCentre();
 
-    void AddPeer(const std::string &name, const PeerInfo &peer);
+    virtual void AddPeer(const std::string &name, const PeerInfo &peer);
 
     bool OpenService();
     int ConnectTo(const std::string& dst="");
