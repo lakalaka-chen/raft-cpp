@@ -45,5 +45,18 @@ std::string RequestVoteReply::Serialization() const {
     return os.str();
 }
 
+bool RequestVoteReply::UnSerialization(const std::string & recv_msg, RequestVoteReply &reply) {
+    std::istringstream is(recv_msg);
+    std::string method;
+    is >> method;
+    if (method != "RequestVoteReply") {
+        return false;
+    }
+    is >> reply.term;
+    is >> reply.vote_granted;
+    is >> reply.err_msg;
+    return true;
+}
+
 
 }

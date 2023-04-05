@@ -30,6 +30,7 @@ struct AppendEntriesReply {
     int conflict_index;
     [[nodiscard]] std::string String() const;
     [[nodiscard]] std::string Serialization() const;
+    static bool UnSerialization(const std::string &recv_msg, AppendEntriesReply &reply);
 };
 
 

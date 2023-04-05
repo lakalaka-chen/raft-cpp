@@ -7,12 +7,12 @@ namespace raft {
 CommsCentre::CommsCentre(std::string name, uint16_t port)
     : name_(std::move(name)), port_(port) {
     rpc_server_ = std::make_shared<Server>("[RPC Server]", port);
-    rpc_server_->Register("Echo", [](const std::string &recv, std::string &reply){
-        reply = recv;
-    });
-    rpc_server_->HandleReceiveData([&](const std::string &recv, std::string &reply){
-        rpc_server_->Call<const std::string&, std::string &>("Echo", recv, std::ref(reply));
-    });
+//    rpc_server_->Register("Echo", [](const std::string &recv, std::string &reply){
+//        reply = recv;
+//    });
+//    rpc_server_->HandleReceiveData([&](const std::string &recv, std::string &reply){
+//        rpc_server_->Call<const std::string&, std::string &>("Echo", recv, std::ref(reply));
+//    });
 }
 
 

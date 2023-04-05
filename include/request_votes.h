@@ -20,7 +20,10 @@ struct RequestVoteReply {
     std::string err_msg;  // TODO: 现在的err_msg不可以有空字符
     [[nodiscard]] std::string String() const;
     [[nodiscard]] std::string Serialization() const;
+
+    static bool UnSerialization(const std::string & recv_msg, RequestVoteReply &reply);
 };
+
 
 
 }

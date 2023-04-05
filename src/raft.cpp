@@ -1,8 +1,5 @@
 
 #include "raft.h"
-#include "log_entry.h"
-#include "append_entries.h"
-#include "request_votes.h"
 
 #include "spdlog/spdlog.h"
 
@@ -10,6 +7,7 @@
 #include <vector>
 #include <atomic>
 #include <thread>
+#include <sstream>
 
 namespace raft {
 
@@ -115,7 +113,7 @@ RaftPtr Raft::Make(
 
 Raft::Raft(std::string name, uint16_t port)
     : CommsCentre(std::move(name), port),
-      peers_num_(0),
+      peers_num_(1),
       current_term_(0),
       vote_for_("None"),
       commit_index_(0),
@@ -136,8 +134,10 @@ Raft::~Raft() {
 
 
 void Raft::TurnOn() {
-    OpenService();  // 打开自己的Rpc服务器
-    ConnectTo();    // 与所有peers建立Tcp连接
+    _installRpcService();           // 先注册一下RPC服务
+    _installReceiveHandler();       // 确定收到数据包的解析、流程
+    OpenService();                  // 打开自己的Rpc服务器
+    ConnectTo();                    // 与所有peers建立Tcp连接
 
     auto rf_weak_ptr = std::weak_ptr<Raft>(shared_from_this());  // 防止循环引用
 
@@ -263,12 +263,35 @@ void Raft::_electionHandler() {
     // broadcast RequestVotes RPC
     const LogEntry & end_log = logs_.back();
     RequestVoteArgs args { current_term_, name_, end_log.index, end_log.term };
+
+    lock.unlock();
     auto message = args.Serialization();
     for (auto & peer_pipe: pipes_with_peer_) {
         assert (peer_pipe.first != name_);
         auto sender = peer_pipe.second;
-        std::thread th_send([sender, &message](){
+        std::string dst = peer_pipe.first;
+        std::thread th_send([&, sender, dst](){
+            std::string reply_msg;
             sender->SendMsg(message);
+            sender->RecvMsg(&reply_msg);
+            RequestVoteReply reply;
+            bool ok = RequestVoteReply::UnSerialization(reply_msg, reply);
+            if (!ok) {
+                spdlog::error("RequestVotes RPC receive a mismatch Reply. ");
+            } else {
+                std::unique_lock<std::mutex> lock(mu_);
+                if (reply.term > current_term_) {
+                    _toCandidate();
+                    spdlog::info("竞选失败, 结点{}的term: {} 更新, current_term= {}", dst, reply.term, current_term_);
+                } else if (reply.vote_granted) {
+                    votes_to_me_ ++;
+                    if (votes_to_me_ * 2 > peers_num_) {
+                        _toLeader();
+                    }
+                } else {
+                    spdlog::error("竞选失败, err_msg= {}", reply.err_msg);
+                }
+            }
         });
     }
 
@@ -284,7 +307,8 @@ void Raft::_replicateHandler() {
     }
     // 这个变量貌似没有用了, 因为replicate_cycle_timer_内部可以处理循环计时
     last_heart_beat_time_ = Clock::now();
-    // TODO: broadcast AppendEntries RPC
+
+    // broadcast AppendEntries RPC
     const LogEntry & end_log = logs_.back();
     AppendEntriesArgs args { &logs_, int(logs_.size()) }; // 定义一个心跳包
     args.term = current_term_;
@@ -296,18 +320,40 @@ void Raft::_replicateHandler() {
     int n_log_in_leader = int(logs_.size());
 
     int n_thread = int(pipes_with_peer_.size());
+    lock.unlock();
+
     std::vector<std::thread> send_threads(n_thread);
 
     int i = -1;
     for (auto & peer_pipe: pipes_with_peer_) {
+        lock.lock();
         assert ( peer_pipe.first != name_ );
         i ++;
         int next_index = next_index_[peer_pipe.first];
         int match_index = match_index_[peer_pipe.first];
         if (next_index == n_log_in_leader && match_index == next_index-1) {
             auto sender = peer_pipe.second;
-            send_threads[i] = std::thread([sender, args](){ // 心跳包直接发送args就可以了
+            lock.unlock();
+            send_threads[i] = std::thread([&, sender, args](){ // 心跳包直接发送args就可以了
                 sender->SendMsg(args.Serialization());
+                std::string reply_msg;
+                sender->RecvMsg(&reply_msg);
+                std::unique_lock<std::mutex> lock(mu_);
+                AppendEntriesReply reply;
+                bool ok = AppendEntriesReply::UnSerialization(reply_msg, reply);
+                if (!ok) {
+                    spdlog::error("AppendEntriesRPC收到错误的回复类型");
+                    return;
+                }
+                if (status_ != RaftStatus::Leader) {
+                    return;
+                }
+                if (reply.term > current_term_) {
+                    spdlog::info("收到[{}]的心跳包回复, 发现自己过期[收到term= {}, 自己的term= {}]", reply.server_name, reply.term, current_term_);
+                    current_term_ = reply.term;
+                    _toFollower();
+                    return;
+                }
             });
         } else {
             const LogEntry & prev_log = logs_[next_index - 1];
@@ -315,21 +361,53 @@ void Raft::_replicateHandler() {
             int prev_log_term = prev_log.term;
 
             auto sender = peer_pipe.second;
-            send_threads[i] = std::thread([sender, prev_log_index, prev_log_term, next_index](AppendEntriesArgs &args){
+            lock.unlock();
+            send_threads[i] = std::thread([&, sender, prev_log_index, prev_log_term, next_index](AppendEntriesArgs &args){
                 // AppendEntriesArgs &做一次拷贝, AppendEntriesArgs拷贝两次
                 // args用拷贝, 防止循环下一轮修改args, 影响到本轮的发送
                 args.prev_log_index = prev_log_index;
                 args.prev_log_term = prev_log_term;
                 args.send_start_index = next_index;
                 sender->SendMsg(args.Serialization());
+                std::string reply_msg;
+                sender->RecvMsg(&reply_msg);
+                std::unique_lock<std::mutex> lock(mu_);
+                AppendEntriesReply reply;
+                bool ok = AppendEntriesReply::UnSerialization(reply_msg, reply);
+                if (!ok) {
+                    spdlog::error("AppendEntriesRPC收到错误的回复类型");
+                    return;
+                }
+                if (status_ != RaftStatus::Leader) {
+                    return;
+                }
+
+                if (reply.term > current_term_) {
+                    spdlog::info("收到[{}]的AppendEntries回复, 发现自己过期[收到term= {}, 自己的term= {}]", reply.server_name, reply.term, current_term_);
+                    current_term_ = reply.term;
+                    _toFollower();
+                    return;
+                }
+
+                if (reply.success) {
+                    match_index_[reply.server_name] = reply.finished_index;
+                    next_index_[reply.server_name] = reply.finished_index + 1;
+                    if (_isEnableCommit(reply.finished_index)) {
+                        commit_index_ = reply.finished_index;
+                    }
+                } else {
+                    next_index_[reply.server_name] = reply.conflict_index;
+                }
+
             }, args);
         }
     }
 
-    for (i = 0; i < n_thread; i ++) { // 用来发送数据的线程没有被保护, 所有要join, _replicateHandler等到发送完毕再退出
-        if (send_threads[i].joinable()) {
-            send_threads[i].join();
-        }
+    for (i = 0; i < n_thread; i ++) {
+//        if (send_threads[i].joinable()) {
+//            send_threads[i].join();
+//        }
+        send_threads[i].detach();
     }
 }
 
@@ -341,6 +419,198 @@ void Raft::_applyHandler() {
         // TODO: apply一条日志
     }
 }
+
+
+
+void Raft::_installRpcService() {
+    // TODO: 暂时不用RPC服务的做法
+}
+
+void Raft::_installReceiveHandler() {
+
+    rpc_server_->HandleReceiveData([&](const std::string &recv, std::string &reply){
+        std::istringstream is(recv);
+        std::string package_name;
+        is >> package_name;
+        std::unique_lock<std::mutex> lock(mu_);
+        if (package_name == "RequestVotes") {
+            spdlog::debug("receive a RequestVotes RPC. ");
+            RequestVoteReply vote_reply;
+            bool analysis_success = _RequestVotes(is, vote_reply);
+            if (!analysis_success) {
+                spdlog::error("Analysis the package of RequestVotes RPC failed. ");
+                reply = "[package error]";
+            } else {
+                reply = vote_reply.Serialization();
+            }
+        } else if (package_name == "_appendEntries") {
+            spdlog::debug("receive an _appendEntries RPC. ");
+            AppendEntriesReply append_reply;
+            bool analysis_success = _AppendEntries(is, append_reply);
+            if (!analysis_success) {
+                spdlog::error("Analysis the package of _appendEntries RPC failed. ");
+                reply = "[package error]";
+            } else {
+                reply = append_reply.Serialization();
+            }
+        } else {
+            spdlog::debug("receive an Unknown RPC. ");
+            reply = "Unknown type RPC. ";
+        }
+    });
+}
+
+/*
+ * os << term << " ";
+ * os << leader_name << " ";
+ * os << leader_committed_index << " ";
+ * os << prev_log_index << " ";
+ * os << prev_log_term << " ";
+ * int n_logs = int(logs_ptr->size());
+ * os << n_logs-send_start_index << " ";
+ * for (int i = send_start_index; i < n_logs; i ++) {
+ *     os << (*logs_ptr)[i].Serialization();
+ * }
+ * */
+bool Raft::_AppendEntries(std::istringstream &is, AppendEntriesReply &reply) {
+    int term;
+    std::string leader_name;
+    int leader_committed_index;
+    int prev_log_index;
+    int prev_log_term;
+    int n_logs;
+    try {
+        is >> term;
+        is >> leader_name;
+        is >> leader_committed_index;
+        is >> prev_log_index;
+        is >> prev_log_term;
+        is >> n_logs;
+
+        if (term < current_term_) {
+            reply.term = current_term_;
+            reply.success = false;
+            return true;  // 解析成功
+        }
+
+        reply.server_name = name_;
+        current_term_ = term;
+        _toFollower();
+        reply.term = term;
+
+        if (prev_log_index >= logs_.size()) {
+            reply.conflict_index = logs_.size();
+            reply.success = false;
+        } else if (prev_log_term != logs_[prev_log_index].term) {
+            int conflict_term = logs_[prev_log_index].term;
+            int j = 0;
+            for (; j < prev_log_index; j ++) {
+                if (logs_[j+1].term == conflict_term) {
+                    j = j+1;
+                    break;
+                }
+            }
+            reply.conflict_index = j;
+            reply.success = false;
+        } else {
+            logs_.erase(logs_.begin()+prev_log_index+1, logs_.end());
+            int n_curr = int(logs_.size());
+            logs_.resize( n_curr + n_logs );
+            LogEntry log;
+            for (int i = 0; i < n_logs; i ++) {
+                /*
+                 * os << index << " ";
+                 * os << term << " ";
+                 * os << command << " ";
+                 * */
+                is >> log.index;
+                is >> log.term;
+                is >> log.command;
+                logs_[n_curr + i] = log;
+            }
+            reply.finished_index = logs_.back().index;
+            reply.success = true;
+        }
+
+    } catch (const std::exception &e) {
+        spdlog::error("{}", e.what());
+        return false;
+    }
+
+    return true;
+}
+
+/*
+    os << term << " ";
+    os << candidate_name << " ";
+    os << last_log_index << " ";
+    os << last_log_term << " ";
+*/
+bool Raft::_RequestVotes(std::istringstream &is, RequestVoteReply &reply) {
+    int term;
+    std::string candidate_name;
+    int last_log_index;
+    int last_log_term;
+    try {
+        is >> term >> candidate_name >> last_log_index >> last_log_term;
+        if (current_term_ == term && vote_for_ == candidate_name) {
+            reply.vote_granted = true;
+            reply.term = current_term_;
+            return true;
+        }
+
+        if (current_term_ == term || ( current_term_ == term && vote_for_ == "None" ) ) {
+            reply.term = current_term_;
+            reply.vote_granted = false;
+            reply.err_msg = "竞选者term落后";
+            return true;
+        }
+
+        if (current_term_ < term) {
+            current_term_ = term;
+            vote_for_ = "None";
+            if (status_ != RaftStatus::Follower) {
+                _toFollower();
+            }
+        }
+
+        reply.term = term;
+        const LogEntry & end_log = logs_.back();
+
+        if (end_log.term > last_log_term || ( end_log.term == last_log_term && end_log.index > last_log_index ) ) {
+            reply.vote_granted = false;
+            reply.err_msg = "竞选者日志落后";
+            return true;
+        }
+
+        reply.vote_granted = true;
+        vote_for_ = candidate_name;
+        reply.err_msg = "";
+        _toFollower();
+
+    } catch (const std::exception &e) {
+        spdlog::error("{}", e.what());
+        return false;
+    }
+
+    return true;
+}
+
+bool Raft::_isEnableCommit(int index) {
+    const LogEntry & end_log = logs_.back();
+    int n_logs = int(logs_.size());
+    if (index < n_logs && commit_index_ < index && logs_[index].term == current_term_) {
+        int count = 0;
+        for (auto & it : match_index_) {
+            if (it.second >= index) {
+                count ++;
+            }
+        }
+        return count * 2 > peers_num_;
+    }
+    return false;
+}
+
 
 
 }

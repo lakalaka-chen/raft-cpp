@@ -19,10 +19,12 @@ std::string AppendEntriesArgs::String() const {
 
 std::string AppendEntriesArgs::Serialization() const {
     std::ostringstream os;
-    os << "AppendEntries ";
+    os << "_appendEntries ";
     os << term << " ";
     os << leader_name << " ";
     os << leader_committed_index << " ";
+    os << prev_log_index << " ";
+    os << prev_log_term << " ";
     int n_logs = int(logs_ptr->size());
     os << n_logs-send_start_index << " ";
     for (int i = send_start_index; i < n_logs; i ++) {
@@ -60,6 +62,21 @@ std::string AppendEntriesReply::Serialization() const {
     os << finished_index << " ";
     os << conflict_index << " ";
     return os.str();
+}
+
+bool AppendEntriesReply::UnSerialization(const std::string &recv_msg, AppendEntriesReply &reply) {
+    std::istringstream is(recv_msg);
+    std::string method;
+    is >> method;
+    if (method != "AppendEntriesReply") {
+        return false;
+    }
+    is >> reply.server_name;
+    is >> reply.term;
+    is >> reply.success;
+    is >> reply.finished_index;
+    is >> reply.conflict_index;
+    return true;
 }
 
 

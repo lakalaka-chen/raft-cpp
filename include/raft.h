@@ -2,6 +2,8 @@
 
 #include "comms_centre.h"
 #include "log_entry.h"
+#include "append_entries.h"
+#include "request_votes.h"
 #include "time_utils.h"
 #include "timer/trigger_timer.h"
 
@@ -82,15 +84,19 @@ protected:
     void _toFollower();
     void _toLeader();
 
-//    void _electionMonitor();
-//    void _replicateMonitor();
-//    void _applyMonitor();
 
     void _electionHandler();
     void _replicateHandler();
     void _applyHandler();
 
 
+    void _installRpcService();
+    void _installReceiveHandler();
+
+    bool _AppendEntries(std::istringstream &is, AppendEntriesReply &reply);
+    bool _RequestVotes(std::istringstream &is, RequestVoteReply &reply);
+
+    bool _isEnableCommit(int index);
 
 };
 
