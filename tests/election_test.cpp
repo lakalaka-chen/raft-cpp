@@ -6,12 +6,30 @@
 using namespace raft;
 
 
-TEST(InitialElection, TEST1) {
+bool checkOneLeader(const std::vector<RaftPtr> & machines) {
+    int n_leader = 0;
+    std::pair<int, bool> state;
+    for (RaftPtr ptr: machines) {
+        state = ptr->GetState();
+        if (state.second) {
+            n_leader ++;
+        }
+    }
+    return n_leader == 1;
+}
 
-    spdlog::set_level(spdlog::level::debug);
+bool checkTermsSame(const std::vector<RaftPtr> & machines) {
+    std::set<int> terms;
+    std::pair<int, bool> state;
+    for (RaftPtr ptr: machines) {
+        state = ptr->GetState();
+        terms.insert(state.first);
+    }
+    return terms.size() == 1;
+}
 
-    int n_servers = 3;
 
+void singleInitialElection(int n_servers) {
     std::vector<PeerInfo> peers_info(n_servers);
     std::vector<std::string> peers_name(n_servers);
 
@@ -31,18 +49,26 @@ TEST(InitialElection, TEST1) {
 
     for (int i = 0; i < n_servers; i ++) {
         raft_pointers[i]->ConnectTo();
-    }
-
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-
-    for (int i = 0; i < n_servers; i ++) {
         raft_pointers[i]->StartTimers();
     }
 
 
-    int a;
-    while (std::cin >> a) {
-
-    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    ASSERT_EQ(true, checkOneLeader(raft_pointers));
+    ASSERT_EQ(true, checkTermsSame(raft_pointers));
 }
+
+/*
+ * 无故障的情况下可以选出唯一的领导者
+ * 并且term最终保持一致
+ * */
+TEST(ElectionTest, InitialElection) {
+
+    spdlog::set_level(spdlog::level::debug);
+//    singleInitialElection(3);
+//    singleInitialElection(5);
+    singleInitialElection(7);
+}
+
+
 

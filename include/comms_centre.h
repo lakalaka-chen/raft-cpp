@@ -32,6 +32,9 @@ protected:
     std::string name_;
     uint16_t port_;
 
+//    std::mutex mu_;
+//    bool is_running_;
+
 public:
     explicit CommsCentre(std::string name, uint16_t port);
     virtual ~CommsCentre();

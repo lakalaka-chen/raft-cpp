@@ -17,7 +17,7 @@ CommsCentre::CommsCentre(std::string name, uint16_t port)
 
 
 CommsCentre::~CommsCentre() {
-    spdlog::info("{} is being deconstructing.", name_);
+//    spdlog::info("{} is being deconstructing.", name_);
     CloseRPC();
     peers_.clear();
     pipes_with_peer_.clear();

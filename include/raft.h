@@ -38,6 +38,7 @@ public:
             const std::string &me, uint16_t port);
 private:
     std::mutex mu_;
+    bool is_running_;
 
     int peers_num_;
 

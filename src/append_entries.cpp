@@ -46,7 +46,7 @@ std::string AppendEntriesReply::String() const {
     std::ostringstream os;
     os << "server name: " << server_name << "; ";
     os << "term: " << term << "; ";
-    os << "success: " << (success ? "True" : "False");
+    os << "success: " << (success ? "True" : "False") << "; ";
     os << "finished index: " << finished_index << "; ";
     os << "conflict index: " << conflict_index << " ";
     return os.str();
