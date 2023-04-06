@@ -4,7 +4,7 @@
 #include "log_entry.h"
 #include "append_entries.h"
 #include "request_votes.h"
-#include "time_utils.h"
+//#include "time_utils.h"
 #include "timer/trigger_timer.h"
 
 #include <memory>
@@ -23,6 +23,7 @@ using RaftPtr = std::shared_ptr<Raft>;
 
 using trigger_timer::TriggerTimer;
 using trigger_timer::CycleTimer;
+using trigger_timer::TimePoint;
 
 
 class Raft: public CommsCentre, public std::enable_shared_from_this<Raft> {
@@ -55,19 +56,21 @@ private:
 
     /// 处理时间的变量
     int election_timeout_;              // 单位: ms
-    TimePoint last_recv_time_;          // 貌似没有意义
     int heart_beat_timeout_;            // 单位: ms
-    TimePoint last_heart_beat_time_;    // 貌似没有意义
 
 
     TriggerTimer election_timeout_trigger_;  // 处理ElectionTimeOut
     CycleTimer replicate_cycle_timer_;         // 处理日志复制, 日志复制和心跳包一起处理, 超时时间按心跳时间设定
     CycleTimer apply_cycle_timer_;             // 执行到状态机触发器
+    std::function<void()> election_callback_;
 
 public:
     explicit Raft(std::string name, uint16_t port);
     ~Raft() override;
-    void TurnOn();
+
+    void SetUp();
+
+    void StartTimers(bool enable_candidate=true);   // 启动计时器
     void AddPeer(const std::string &name, const PeerInfo &peer) override;
 
     std::tuple<int,int,bool> Start(const std::string &msg);
@@ -84,17 +87,20 @@ protected:
     void _toFollower();
     void _toLeader();
 
+    void _restartElectionTimeout();
+
 
     void _electionHandler();
     void _replicateHandler();
     void _applyHandler();
 
 
+    void _installTimers();          // 设置计时器行为、倒计时
     void _installRpcService();
     void _installReceiveHandler();
 
-    bool _AppendEntries(std::istringstream &is, AppendEntriesReply &reply);
-    bool _RequestVotes(std::istringstream &is, RequestVoteReply &reply);
+    bool _appendEntries(std::istringstream &is, AppendEntriesReply &reply);
+    bool _requestVotes(std::istringstream &is, RequestVoteReply &reply);
 
     bool _isEnableCommit(int index);
 

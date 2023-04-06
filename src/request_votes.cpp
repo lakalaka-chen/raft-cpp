@@ -19,7 +19,7 @@ std::string RequestVoteArgs::String() const {
 
 std::string RequestVoteArgs::Serialization() const {
     std::ostringstream os;
-    os << "RequestVote ";
+    os << "RequestVotes ";
     os << term << " ";
     os << candidate_name << " ";
     os << last_log_index << " ";

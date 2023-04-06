@@ -40,6 +40,7 @@ bool LogEntry::EqualTo(const LogEntry &other) const {
 
 std::string LogEntry::Serialization() const {
     std::ostringstream os;
+//    os << "AppendEntries ";
     os << index << " ";
     os << term << " ";
     os << command << " ";

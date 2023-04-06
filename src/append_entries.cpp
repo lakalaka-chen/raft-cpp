@@ -19,7 +19,7 @@ std::string AppendEntriesArgs::String() const {
 
 std::string AppendEntriesArgs::Serialization() const {
     std::ostringstream os;
-    os << "_appendEntries ";
+    os << "AppendEntries ";
     os << term << " ";
     os << leader_name << " ";
     os << leader_committed_index << " ";

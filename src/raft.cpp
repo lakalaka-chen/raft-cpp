@@ -8,6 +8,7 @@
 #include <atomic>
 #include <thread>
 #include <sstream>
+#include <random>
 
 namespace raft {
 
@@ -37,6 +38,14 @@ namespace raft {
  *
  * */
 
+using trigger_timer::Clock;
+
+int GetRandomInt(int min, int max) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> dis(min, max);
+    return dis(gen);
+}
 
 RaftPtr Raft::Make(
         const std::vector<PeerInfo> &peers_info,
@@ -50,65 +59,10 @@ RaftPtr Raft::Make(
         rf->AddPeer(peers_name[i], peers_info[i]);
     }
 
-    rf->TurnOn();
+//    rf->TurnOn();
 
     return rf;
 }
-
-
-//RaftPtr Raft::Make(
-//        const std::vector<PeerInfo> &peers_info,
-//        const std::vector<std::string> &peers_name,
-//        const std::string &me, uint16_t port) {
-//    RaftPtr rf = std::make_shared<Raft>(me, port);
-//    int n_peers = int(peers_info.size());
-//    assert ( n_peers > 0 );
-//    for (int i = 0; i < n_peers; i ++) {
-//        if (peers_name[i] == me) continue;
-//        rf->AddPeer(peers_name[i], peers_info[i]);
-//        rf->next_index_.insert({peers_name[i], 0});
-//        rf->match_index_.insert({peers_name[i], 0});
-//    }
-//    rf->peers_num_ = n_peers;
-//    rf->current_term_ = 0;
-//    rf->vote_for_ = "None";
-//    rf->logs_.push_back(default_empty_log);  // 占位. 这么做可以保证next_index_, match_index_初始值0有意义
-//    rf->commit_index_ = 0;
-//    rf->last_applied_ = 0;
-//    rf->status_ = RaftStatus::Follower;
-//    rf->dead_.store(false);
-//    rf->votes_to_me_ = 0;
-//
-//    rf->election_timeout_ = GetRandDuration(ElectionTimeoutMin, ElectionTimeoutMax);
-//    rf->last_recv_time_ = Clock::now();
-//    rf->heart_beat_timeout_ = HeartBeatInterval;
-//    rf->last_heart_beat_time_ = Clock::now();
-//
-//    rf->OpenService();  // 打开自己的Rpc服务器
-//    rf->ConnectTo();    // 与所有peers建立Tcp连接
-//
-//
-//    auto rf_weak_ptr = std::weak_ptr<Raft>(rf);  // 防止循环引用
-//
-//    rf->election_timeout_trigger_.SetUpTimeout(rf->election_timeout_);
-//    auto election_callback = [rf_weak_ptr] { rf_weak_ptr.lock()->_electionHandler(); };
-//    rf->election_timeout_trigger_.SetUpCallback(election_callback);
-//
-//    rf->replicate_cycle_timer_.SetUpTimeout(rf->heart_beat_timeout_);
-//    auto replicate_callback = [rf_weak_ptr] { rf_weak_ptr.lock()->_replicateHandler(); };
-//    rf->replicate_cycle_timer_.SetUpCallback(replicate_callback);
-//
-//    rf->apply_cycle_timer_.SetUpTimeout(ApplyInterval);
-//    auto apply_callback = [rf_weak_ptr] { rf_weak_ptr.lock()->_applyHandler(); };
-//    rf->apply_cycle_timer_.SetUpCallback(apply_callback);
-//
-//
-//    rf->election_timeout_trigger_.Start();
-//    rf->replicate_cycle_timer_.Start();
-//    rf->apply_cycle_timer_.Start();
-//
-//    return rf;
-//}
 
 
 Raft::Raft(std::string name, uint16_t port)
@@ -121,29 +75,29 @@ Raft::Raft(std::string name, uint16_t port)
       status_(RaftStatus::Follower),
       dead_(false),
       votes_to_me_(0),
-      election_timeout_(GetRandDuration(ElectionTimeoutMin, ElectionTimeoutMax)),
-      last_recv_time_(Clock::now()),
-      heart_beat_timeout_(HeartBeatInterval),
-      last_heart_beat_time_(Clock::now()) {
+      election_timeout_(GetRandomInt(ElectionTimeoutMin, ElectionTimeoutMax)),
+      heart_beat_timeout_(HeartBeatInterval) {
     logs_.push_back(default_empty_log);
 }
 
 Raft::~Raft() {
-    spdlog::debug("Raft Node [{}] is deconstructing. ");
+    spdlog::debug("结点[{}]正在退出... ", name_);
 }
 
 
-void Raft::TurnOn() {
+void Raft::SetUp() {
     _installRpcService();           // 先注册一下RPC服务
     _installReceiveHandler();       // 确定收到数据包的解析、流程
     OpenService();                  // 打开自己的Rpc服务器
-    ConnectTo();                    // 与所有peers建立Tcp连接
+    _installTimers();               // 设置计时器的行为和倒计时
+}
 
+void Raft::_installTimers() {
     auto rf_weak_ptr = std::weak_ptr<Raft>(shared_from_this());  // 防止循环引用
 
     election_timeout_trigger_.SetUpTimeout(election_timeout_);
-    auto election_callback = [rf_weak_ptr] { rf_weak_ptr.lock()->_electionHandler(); };
-    election_timeout_trigger_.SetUpCallback(election_callback);
+    election_callback_ = [rf_weak_ptr] { rf_weak_ptr.lock()->_electionHandler(); };
+    election_timeout_trigger_.SetUpCallback(election_callback_);
 
     replicate_cycle_timer_.SetUpTimeout(heart_beat_timeout_);
     auto replicate_callback = [rf_weak_ptr] { rf_weak_ptr.lock()->_replicateHandler(); };
@@ -152,12 +106,17 @@ void Raft::TurnOn() {
     apply_cycle_timer_.SetUpTimeout(ApplyInterval);
     auto apply_callback = [rf_weak_ptr] { rf_weak_ptr.lock()->_applyHandler(); };
     apply_cycle_timer_.SetUpCallback(apply_callback);
-
-
-    election_timeout_trigger_.Start();
-    replicate_cycle_timer_.Start();
-    apply_cycle_timer_.Start();
+    spdlog::debug("结点[{}]初始化计时器完毕", name_);
 }
+
+
+void Raft::StartTimers(bool enable_candidate) {
+    if (enable_candidate) {
+        election_timeout_trigger_.Start();
+    }
+//    apply_cycle_timer_.Start();
+}
+
 
 
 
@@ -204,12 +163,18 @@ void Raft::_toCandidate() {
     status_ = RaftStatus::Candidate;
     vote_for_ = name_;
     votes_to_me_ = 1;
+}
 
-    last_recv_time_ = Clock::now();
+/// 这个函数的内容本来应该放在_toCandidate()内部
+/// 结点变成Candidate之后, RequestVotes还没发完
+/// 又超时了
+/// 所以改变策略, 等发完了再执行这个函数的操作
+void Raft::_restartElectionTimeout() {
     // 启动一个新的election_timeout_trigger_
     election_timeout_trigger_.Stop();
-    election_timeout_ = GetRandDuration(ElectionTimeoutMin, ElectionTimeoutMax);
+    election_timeout_ = GetRandomInt(ElectionTimeoutMin, ElectionTimeoutMax);
     election_timeout_trigger_.SetUpTimeout(election_timeout_);
+//    election_timeout_trigger_.SetUpCallback(election_callback_);
     election_timeout_trigger_.Start();
     // 关闭replicate_cycle_timer_
     replicate_cycle_timer_.Stop();
@@ -221,15 +186,7 @@ void Raft::_toFollower() {
     votes_to_me_ = 0;
     vote_for_ = "None";
 
-    last_recv_time_ = Clock::now();
-
-    // 启动一个新的election_timeout_trigger_
-    election_timeout_trigger_.Stop();
-    election_timeout_ = GetRandDuration(ElectionTimeoutMin, ElectionTimeoutMax);
-    election_timeout_trigger_.SetUpTimeout(election_timeout_);
-    election_timeout_trigger_.Start();
-    // 关闭replicate_cycle_timer_
-    replicate_cycle_timer_.Stop();
+    _restartElectionTimeout();
 }
 
 /// 没有mutex保护
@@ -237,7 +194,6 @@ void Raft::_toLeader() {
     status_ = RaftStatus::Leader;
     votes_to_me_ = 0;
     vote_for_ = "None";
-    last_heart_beat_time_ = Clock::now();
     for (auto & it : match_index_) {
         it.second = 0;
         next_index_[it.first] = int(logs_.size());
@@ -255,9 +211,10 @@ void Raft::_electionHandler() {
     std::unique_lock<std::mutex> lock(mu_);
     // 有没有必要检查一下身份？
     if (status_ == RaftStatus::Leader) {
-        spdlog::debug("Election time out, however I am the Leader now ?!");
+        spdlog::debug("结点[{}]超时, 但是临时发现已经是领导者", name_);
         return;
     }
+    spdlog::debug("结点[{}]超时, 成为竞选者", name_);
     _toCandidate();
 
     // broadcast RequestVotes RPC
@@ -265,27 +222,30 @@ void Raft::_electionHandler() {
     RequestVoteArgs args { current_term_, name_, end_log.index, end_log.term };
 
     lock.unlock();
-    auto message = args.Serialization();
     for (auto & peer_pipe: pipes_with_peer_) {
         assert (peer_pipe.first != name_);
         auto sender = peer_pipe.second;
         std::string dst = peer_pipe.first;
-        std::thread th_send([&, sender, dst](){
+        std::thread th_send([&, args, sender, dst](){
+            std::string message = args.Serialization();
             std::string reply_msg;
+            spdlog::debug("结点[{}]向结点[{}]发送RequestVotesRPC请求, 数据包序列化后的内容「 {}」", name_, dst, message);
             sender->SendMsg(message);
             sender->RecvMsg(&reply_msg);
+            spdlog::debug("结点[{}]收到结点[{}]的投票回复, 数据包序列化后的内容「 {}」", name_, dst, reply_msg);
             RequestVoteReply reply;
             bool ok = RequestVoteReply::UnSerialization(reply_msg, reply);
             if (!ok) {
-                spdlog::error("RequestVotes RPC receive a mismatch Reply. ");
+                spdlog::error("结点[{}]收到结点[{}]的投票回复内容解析出错", name_, dst);
             } else {
                 std::unique_lock<std::mutex> lock(mu_);
                 if (reply.term > current_term_) {
-                    _toCandidate();
-                    spdlog::info("竞选失败, 结点{}的term: {} 更新, current_term= {}", dst, reply.term, current_term_);
+                    spdlog::debug("结点[{}]的任期号{}, 结点[{}]的任期号{}, 竞选失败", name_, current_term_, dst, reply.term);
+                    _toFollower();
                 } else if (reply.vote_granted) {
                     votes_to_me_ ++;
                     if (votes_to_me_ * 2 > peers_num_) {
+                        spdlog::debug("结点[{}]收到多数派投票, 成为领导者, 任期号{}", name_, current_term_);
                         _toLeader();
                     }
                 } else {
@@ -293,8 +253,11 @@ void Raft::_electionHandler() {
                 }
             }
         });
+        th_send.detach();
     }
 
+//    lock.lock();
+//    _restartElectionTimeout();
 }
 
 // time to replicate
@@ -302,11 +265,9 @@ void Raft::_replicateHandler() {
     std::unique_lock<std::mutex> lock(mu_);
     // 有没有必要检查一下身份？
     if (status_ != RaftStatus::Leader) {
-        spdlog::debug("Time to replicate log entries, however I am not the Leader now ?!");
+        spdlog::debug("结点[{}]准备发送AppendEntries, 但是临时发现不是领导者", name_);
         return;
     }
-    // 这个变量貌似没有用了, 因为replicate_cycle_timer_内部可以处理循环计时
-    last_heart_beat_time_ = Clock::now();
 
     // broadcast AppendEntries RPC
     const LogEntry & end_log = logs_.back();
@@ -333,23 +294,28 @@ void Raft::_replicateHandler() {
         int match_index = match_index_[peer_pipe.first];
         if (next_index == n_log_in_leader && match_index == next_index-1) {
             auto sender = peer_pipe.second;
+            std::string dst = peer_pipe.first;
             lock.unlock();
-            send_threads[i] = std::thread([&, sender, args](){ // 心跳包直接发送args就可以了
-                sender->SendMsg(args.Serialization());
+            send_threads[i] = std::thread([&, sender, args, dst](){ // 心跳包直接发送args就可以了
+                std::string message = args.Serialization();
+                sender->SendMsg(message);
+                spdlog::debug("结点[{}]向结点[{}]发送心跳包, 序列化后的数据包内容: 「 {}」", name_, dst, message);
                 std::string reply_msg;
                 sender->RecvMsg(&reply_msg);
+                spdlog::debug("结点[{}]收到结点[{}]的心跳包回复, 序列化后的数据包内容: 「 {}」", name_, dst, reply_msg);
                 std::unique_lock<std::mutex> lock(mu_);
                 AppendEntriesReply reply;
                 bool ok = AppendEntriesReply::UnSerialization(reply_msg, reply);
                 if (!ok) {
-                    spdlog::error("AppendEntriesRPC收到错误的回复类型");
+                    spdlog::error("结点[{}]收到结点[{}]的心跳包回复, 但是解析出错", name_, dst);
                     return;
                 }
                 if (status_ != RaftStatus::Leader) {
+                    spdlog::debug("结点[{}]收到结点[{}]的心跳包回复, 但是此时已经不是领导者", name_, dst);
                     return;
                 }
                 if (reply.term > current_term_) {
-                    spdlog::info("收到[{}]的心跳包回复, 发现自己过期[收到term= {}, 自己的term= {}]", reply.server_name, reply.term, current_term_);
+                    spdlog::debug("结点[{}]收到结点[{}]的心跳包回复, 发现自己过期, {}<{}", name_, dst, current_term_, reply.term);
                     current_term_ = reply.term;
                     _toFollower();
                     return;
@@ -361,13 +327,13 @@ void Raft::_replicateHandler() {
             int prev_log_term = prev_log.term;
 
             auto sender = peer_pipe.second;
+            args.prev_log_index = prev_log_index;
+            args.prev_log_term = prev_log_term;
+            args.send_start_index = next_index;
             lock.unlock();
-            send_threads[i] = std::thread([&, sender, prev_log_index, prev_log_term, next_index](AppendEntriesArgs &args){
+            send_threads[i] = std::thread([&, sender, args](){
                 // AppendEntriesArgs &做一次拷贝, AppendEntriesArgs拷贝两次
                 // args用拷贝, 防止循环下一轮修改args, 影响到本轮的发送
-                args.prev_log_index = prev_log_index;
-                args.prev_log_term = prev_log_term;
-                args.send_start_index = next_index;
                 sender->SendMsg(args.Serialization());
                 std::string reply_msg;
                 sender->RecvMsg(&reply_msg);
@@ -399,7 +365,7 @@ void Raft::_replicateHandler() {
                     next_index_[reply.server_name] = reply.conflict_index;
                 }
 
-            }, args);
+            });
         }
     }
 
@@ -428,33 +394,34 @@ void Raft::_installRpcService() {
 
 void Raft::_installReceiveHandler() {
 
-    rpc_server_->HandleReceiveData([&](const std::string &recv, std::string &reply){
+    auto raft_ptr = std::weak_ptr<Raft>(shared_from_this());
+    rpc_server_->HandleReceiveData([raft_ptr](const std::string &recv, std::string &reply){
+        spdlog::debug("结点[{}]收到消息: 「 {}」", raft_ptr.lock()->name_, recv);
         std::istringstream is(recv);
         std::string package_name;
         is >> package_name;
-        std::unique_lock<std::mutex> lock(mu_);
+        std::unique_lock<std::mutex> lock(raft_ptr.lock()->mu_);
         if (package_name == "RequestVotes") {
-            spdlog::debug("receive a RequestVotes RPC. ");
             RequestVoteReply vote_reply;
-            bool analysis_success = _RequestVotes(is, vote_reply);
+            bool analysis_success = raft_ptr.lock()->_requestVotes(is, vote_reply);
             if (!analysis_success) {
-                spdlog::error("Analysis the package of RequestVotes RPC failed. ");
+                spdlog::error("结点[{}]解析RequestVotes出错", raft_ptr.lock()->name_);
                 reply = "[package error]";
             } else {
                 reply = vote_reply.Serialization();
             }
-        } else if (package_name == "_appendEntries") {
-            spdlog::debug("receive an _appendEntries RPC. ");
+        } else if (package_name == "AppendEntries") {
+            spdlog::debug("结点[{}]收到AppendEntries请求", raft_ptr.lock()->name_);
             AppendEntriesReply append_reply;
-            bool analysis_success = _AppendEntries(is, append_reply);
+            bool analysis_success = raft_ptr.lock()->_appendEntries(is, append_reply);
             if (!analysis_success) {
-                spdlog::error("Analysis the package of _appendEntries RPC failed. ");
+                spdlog::error("结点[{}]解析AppendEntries出错", raft_ptr.lock()->name_);
                 reply = "[package error]";
             } else {
                 reply = append_reply.Serialization();
             }
         } else {
-            spdlog::debug("receive an Unknown RPC. ");
+            spdlog::error("结点[{}]收到未知类型的数据包", raft_ptr.lock()->name_);
             reply = "Unknown type RPC. ";
         }
     });
@@ -472,7 +439,7 @@ void Raft::_installReceiveHandler() {
  *     os << (*logs_ptr)[i].Serialization();
  * }
  * */
-bool Raft::_AppendEntries(std::istringstream &is, AppendEntriesReply &reply) {
+bool Raft::_appendEntries(std::istringstream &is, AppendEntriesReply &reply) {
     int term;
     std::string leader_name;
     int leader_committed_index;
@@ -480,11 +447,8 @@ bool Raft::_AppendEntries(std::istringstream &is, AppendEntriesReply &reply) {
     int prev_log_term;
     int n_logs;
     try {
-        is >> term;
-        is >> leader_name;
-        is >> leader_committed_index;
-        is >> prev_log_index;
-        is >> prev_log_term;
+        is >> term >> leader_name >> leader_committed_index;
+        is >> prev_log_index >> prev_log_term;
         is >> n_logs;
 
         if (term < current_term_) {
@@ -499,7 +463,7 @@ bool Raft::_AppendEntries(std::istringstream &is, AppendEntriesReply &reply) {
         reply.term = term;
 
         if (prev_log_index >= logs_.size()) {
-            reply.conflict_index = logs_.size();
+            reply.conflict_index = int(logs_.size());
             reply.success = false;
         } else if (prev_log_term != logs_[prev_log_index].term) {
             int conflict_term = logs_[prev_log_index].term;
@@ -523,13 +487,12 @@ bool Raft::_AppendEntries(std::istringstream &is, AppendEntriesReply &reply) {
                  * os << term << " ";
                  * os << command << " ";
                  * */
-                is >> log.index;
-                is >> log.term;
-                is >> log.command;
+                is >> log.index >> log.term >> log.command;
                 logs_[n_curr + i] = log;
             }
             reply.finished_index = logs_.back().index;
             reply.success = true;
+            election_timeout_trigger_.Reset();
         }
 
     } catch (const std::exception &e) {
@@ -546,7 +509,7 @@ bool Raft::_AppendEntries(std::istringstream &is, AppendEntriesReply &reply) {
     os << last_log_index << " ";
     os << last_log_term << " ";
 */
-bool Raft::_RequestVotes(std::istringstream &is, RequestVoteReply &reply) {
+bool Raft::_requestVotes(std::istringstream &is, RequestVoteReply &reply) {
     int term;
     std::string candidate_name;
     int last_log_index;
@@ -556,6 +519,7 @@ bool Raft::_RequestVotes(std::istringstream &is, RequestVoteReply &reply) {
         if (current_term_ == term && vote_for_ == candidate_name) {
             reply.vote_granted = true;
             reply.term = current_term_;
+            election_timeout_trigger_.Reset();
             return true;
         }
 
@@ -584,6 +548,7 @@ bool Raft::_RequestVotes(std::istringstream &is, RequestVoteReply &reply) {
         }
 
         reply.vote_granted = true;
+        election_timeout_trigger_.Reset();
         vote_for_ = candidate_name;
         reply.err_msg = "";
         _toFollower();
