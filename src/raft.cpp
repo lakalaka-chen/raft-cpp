@@ -9,6 +9,7 @@
 #include <thread>
 #include <sstream>
 #include <random>
+#include <future>
 
 namespace raft {
 
@@ -102,8 +103,8 @@ void Raft::_installTimers() {
 
     election_timeout_trigger_.SetUpTimeout(election_timeout_);
     auto raft_ptr = shared_from_this();
-    election_callback_ = [raft_ptr] { raft_ptr->_electionHandler(); };
-    election_timeout_trigger_.SetUpCallback(election_callback_);
+    auto election_callback = [raft_ptr] { raft_ptr->_electionHandler(); };
+    election_timeout_trigger_.SetUpCallback(election_callback);
 
     replicate_cycle_timer_.SetUpTimeout(heart_beat_timeout_);
     auto replicate_callback = [raft_ptr] { raft_ptr->_replicateHandler(); };
@@ -152,10 +153,40 @@ std::tuple<int, int, bool> Raft::Start(const std::string &msg) {
 
 void Raft::Kill() {
     dead_.store(true);
+    std::unique_lock<std::mutex> lock(mu_);
+    replicate_cycle_timer_.Stop();
+    election_timeout_trigger_.Stop();
+    apply_cycle_timer_.Stop();
+}
+
+void Raft::Recover() {
+    dead_.store(false);
+    std::unique_lock<std::mutex> lock(mu_);
+    if (status_ == RaftStatus::Leader) {
+        replicate_cycle_timer_.Start();
+    } else {
+        election_timeout_trigger_.Start();
+    }
+    apply_cycle_timer_.Start();
 }
 
 bool Raft::Killed() {
     return dead_.load();
+}
+
+void Raft::SetLongDelay(bool long_delay) {
+    std::unique_lock<std::mutex> lock(mu_);
+    long_delays_ = long_delay;
+}
+
+void Raft::SetSendReliable(bool reliable) {
+    std::unique_lock<std::mutex> lock(mu_);
+    delay_sending_ = reliable;
+}
+
+void Raft::SetReplyReliable(bool reliable) {
+    std::unique_lock<std::mutex> lock(mu_);
+    delay_replying_ = reliable;
 }
 
 std::pair<int, bool> Raft::GetState()  {
@@ -180,7 +211,6 @@ void Raft::_restartElectionTimeout() {
     election_timeout_trigger_.Stop();
     election_timeout_ = GetRandomInt(ElectionTimeoutMin, ElectionTimeoutMax);
     election_timeout_trigger_.SetUpTimeout(election_timeout_);
-//    election_timeout_trigger_.SetUpCallback(election_callback_);
     election_timeout_trigger_.Start();
     // 关闭replicate_cycle_timer_
     replicate_cycle_timer_.Stop();
@@ -192,7 +222,7 @@ void Raft::_toFollower() {
     votes_to_me_ = 0;
     vote_for_ = "None";
 
-    _restartElectionTimeout();
+//    _restartElectionTimeout();
 }
 
 /// 没有mutex保护
@@ -246,6 +276,7 @@ void Raft::_electionHandler() {
             if (!sender->RecvMsg(&reply_msg)) {
                 return;
             }
+
             spdlog::debug("结点[{}]收到结点[{}]的投票回复, 数据包序列化后的内容「 {}」", raft_ptr->name_, dst, reply_msg);
             RequestVoteReply reply;
             bool ok = RequestVoteReply::UnSerialization(reply_msg, reply);
@@ -256,6 +287,7 @@ void Raft::_electionHandler() {
                 if (reply.term > raft_ptr->current_term_) {
                     spdlog::debug("结点[{}]的任期号{}, 结点[{}]的任期号{}, 竞选失败", raft_ptr->name_, raft_ptr->current_term_, dst, reply.term);
                     raft_ptr->_toFollower();
+                    raft_ptr->_restartElectionTimeout();
                 } else if (reply.vote_granted) {
                     raft_ptr->votes_to_me_ ++;
                     if (raft_ptr->votes_to_me_ * 2 > raft_ptr->peers_num_) {
@@ -266,6 +298,7 @@ void Raft::_electionHandler() {
                     spdlog::error("结点[{}]竞选失败, err_msg= {}", raft_ptr->name_, reply.err_msg);
                 }
             }
+
         });
         th_send.detach();
     }
@@ -281,6 +314,16 @@ void Raft::_replicateHandler() {
     if (status_ != RaftStatus::Leader) {
         spdlog::debug("结点[{}]准备发送AppendEntries, 但是临时发现不是领导者", name_);
         return;
+    }
+
+    if (!delay_sending_) { // 随机睡眠一段时间再发心跳包
+        int ms = 0;
+        if (long_delays_) {
+            ms = GetRandomInt(long_delay_min_, long_delay_max_);
+        } else {
+            ms = GetRandomInt(normal_delay_min_, normal_delay_max_);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
     }
 
     // broadcast AppendEntries RPC
@@ -313,15 +356,20 @@ void Raft::_replicateHandler() {
             lock.unlock();
             send_threads[i] = std::thread([raft_ptr, sender, args, dst](){ // 心跳包直接发送args就可以了
                 std::string message = args.Serialization();
+//                spdlog::debug("结点[{}]向结点[{}]发送心跳包......", raft_ptr->name_, dst);
                 if (!sender->SendMsg(message)) {
+                    spdlog::debug("结点[{}]向结点[{}]发送心跳包失败", raft_ptr->name_, dst);
                     return;
                 }
                 spdlog::debug("结点[{}]向结点[{}]发送心跳包, 数据内容: 「 {}」", raft_ptr->name_, dst, args.String());
                 std::string reply_msg;
+
                 if (!sender->RecvMsg(&reply_msg)) {
                     return;
                 }
-//                spdlog::debug("结点[{}]收到结点[{}]的心跳包回复", name_, dst);
+                // 使用std::future::wait_for等待1秒钟
+
+                spdlog::debug("结点[{}]收到结点[{}]的心跳包回复", raft_ptr->name_, dst);
                 std::unique_lock<std::mutex> lock(raft_ptr->mu_);
                 AppendEntriesReply reply;
                 bool ok = AppendEntriesReply::UnSerialization(reply_msg, reply);
@@ -338,6 +386,7 @@ void Raft::_replicateHandler() {
                     spdlog::debug("结点[{}]收到结点[{}]的心跳包回复, 发现自己过期, {}<{}", raft_ptr->name_, dst, raft_ptr->current_term_, reply.term);
                     raft_ptr->current_term_ = reply.term;
                     raft_ptr->_toFollower();
+                    raft_ptr->_restartElectionTimeout();
                     return;
                 }
             });
@@ -345,19 +394,27 @@ void Raft::_replicateHandler() {
             const LogEntry & prev_log = logs_[next_index - 1];
             int prev_log_index = prev_log.index;
             int prev_log_term = prev_log.term;
-
+            std::string dst = peer_pipe.first;
             auto sender = peer_pipe.second;
             args.prev_log_index = prev_log_index;
             args.prev_log_term = prev_log_term;
             args.send_start_index = next_index;
             auto raft_ptr = shared_from_this();
             lock.unlock();
-            send_threads[i] = std::thread([raft_ptr, sender, args](){
+            send_threads[i] = std::thread([raft_ptr, dst, sender, args](){
                 // AppendEntriesArgs &做一次拷贝, AppendEntriesArgs拷贝两次
                 // args用拷贝, 防止循环下一轮修改args, 影响到本轮的发送
-                sender->SendMsg(args.Serialization());
+                if (!sender->SendMsg(args.Serialization())) {
+                    spdlog::debug("结点[{}]向结点[{}]发送AppendEntries失败", raft_ptr->name_, dst);
+                    return;
+                }
                 std::string reply_msg;
-                sender->RecvMsg(&reply_msg);
+
+
+                if (!sender->RecvMsg(&reply_msg)) {
+                    return;
+                }
+
                 std::unique_lock<std::mutex> lock(raft_ptr->mu_);
                 AppendEntriesReply reply;
                 bool ok = AppendEntriesReply::UnSerialization(reply_msg, reply);
@@ -373,6 +430,7 @@ void Raft::_replicateHandler() {
                     spdlog::info("收到[{}]的AppendEntries回复, 发现自己过期[收到term= {}, 自己的term= {}]", reply.server_name, reply.term, raft_ptr->current_term_);
                     raft_ptr->current_term_ = reply.term;
                     raft_ptr->_toFollower();
+                    raft_ptr->_restartElectionTimeout();
                     return;
                 }
 
@@ -389,7 +447,7 @@ void Raft::_replicateHandler() {
             });
         }
     }
-
+//    spdlog::debug("结点[{}]发送了{}条心跳信息", name_, i);
     for (i = 0; i < n_thread; i ++) {
         send_threads[i].detach();
     }
@@ -414,13 +472,27 @@ void Raft::_installReceiveHandler() {
 
     auto raft_ptr = shared_from_this();
     rpc_server_->HandleReceiveData([raft_ptr](const std::string &recv, std::string &reply){
-        std::istringstream is(recv);
-        std::string package_name;
-        is >> package_name;
         std::unique_lock<std::mutex> lock(raft_ptr->mu_);
         if (!raft_ptr->is_running_) {
             return;
         }
+        if (raft_ptr->Killed()) { // 忽略收到的数据包, 模拟网络断开
+            reply = "";
+            return;
+        }
+
+        std::istringstream is(recv);
+        std::string package_name;
+        is >> package_name;
+
+        if (raft_ptr->delay_replying_) {
+            int ms = GetRandomInt(raft_ptr->reply_delay_min_, raft_ptr->reply_delay_max_);
+            std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        }
+
+
+//        spdlog::debug("结点[{}]收到{}数据包", raft_ptr->name_, package_name);
+
         if (package_name == "RequestVotes") {
             RequestVoteReply vote_reply;
             bool analysis_success = raft_ptr->_requestVotes(is, vote_reply);
@@ -431,7 +503,7 @@ void Raft::_installReceiveHandler() {
                 reply = vote_reply.Serialization();
             }
         } else if (package_name == "AppendEntries") {
-            spdlog::debug("结点[{}]收到AppendEntries请求", raft_ptr->name_);
+//            spdlog::debug("结点[{}]收到AppendEntries请求", raft_ptr->name_);
             AppendEntriesReply append_reply;
             bool analysis_success = raft_ptr->_appendEntries(is, append_reply);
             if (!analysis_success) {
@@ -441,13 +513,13 @@ void Raft::_installReceiveHandler() {
                 reply = append_reply.Serialization();
             }
         } else {
-            spdlog::error("结点[{}]收到未知类型的数据包", raft_ptr->name_);
+            spdlog::error("结点[{}]收到未知类型的数据包: {}", raft_ptr->name_, package_name);
             reply = "Unknown type RPC. ";
         }
     });
 }
 
-/*
+/* AppendEntriesRPC内容
  * os << term << " ";
  * os << leader_name << " ";
  * os << leader_committed_index << " ";
@@ -458,6 +530,14 @@ void Raft::_installReceiveHandler() {
  * for (int i = send_start_index; i < n_logs; i ++) {
  *     os << (*logs_ptr)[i].Serialization();
  * }
+ * */
+
+/*  AppendEntriesReply内容
+ *  std::string server_name;
+ *  int term;
+ *  bool success;
+ *  int finished_index;
+ *  int conflict_index;
  * */
 bool Raft::_appendEntries(std::istringstream &is, AppendEntriesReply &reply) {
     int term;
@@ -472,8 +552,12 @@ bool Raft::_appendEntries(std::istringstream &is, AppendEntriesReply &reply) {
         is >> n_logs;
 
         if (term < current_term_) {
+            reply.server_name = name_;
             reply.term = current_term_;
             reply.success = false;
+            reply.finished_index = -1;
+            reply.conflict_index = -1;
+            spdlog::debug("结点[{}]收到结点[{}]的AppendEntriesRPC, 发现结点[{}]term过期", name_, leader_name, term);
             return true;  // 解析成功
         }
 
@@ -484,6 +568,7 @@ bool Raft::_appendEntries(std::istringstream &is, AppendEntriesReply &reply) {
 
         if (prev_log_index >= logs_.size()) {
             reply.conflict_index = int(logs_.size());
+            spdlog::debug("结点[{}]收到结点[{}]的AppendEntriesRPC, 日志有冲突: 'prev_log_index >= logs_.size()'", name_, leader_name);
             reply.success = false;
         } else if (prev_log_term != logs_[prev_log_index].term) {
             int conflict_term = logs_[prev_log_index].term;
@@ -495,6 +580,7 @@ bool Raft::_appendEntries(std::istringstream &is, AppendEntriesReply &reply) {
                 }
             }
             reply.conflict_index = j;
+            spdlog::debug("结点[{}]收到结点[{}]的AppendEntriesRPC, 日志有冲突: 'prev_log_term != logs_[prev_log_index].term'", name_, leader_name);
             reply.success = false;
         } else {
             logs_.erase(logs_.begin()+prev_log_index+1, logs_.end());
@@ -512,14 +598,17 @@ bool Raft::_appendEntries(std::istringstream &is, AppendEntriesReply &reply) {
             }
             reply.finished_index = logs_.back().index;
             reply.success = true;
+            spdlog::debug("结点[{}]收到结点[{}]的AppendEntriesRPC, 日志匹配成功", name_, leader_name);
             election_timeout_trigger_.Reset();
         }
 
     } catch (const std::exception &e) {
         spdlog::error("{}", e.what());
+        _restartElectionTimeout();
         return false;
     }
 
+    _restartElectionTimeout();
     return true;
 }
 
@@ -555,6 +644,7 @@ bool Raft::_requestVotes(std::istringstream &is, RequestVoteReply &reply) {
             vote_for_ = "None";
             if (status_ != RaftStatus::Follower) {
                 _toFollower();
+                _restartElectionTimeout();
             }
         }
 
@@ -572,6 +662,7 @@ bool Raft::_requestVotes(std::istringstream &is, RequestVoteReply &reply) {
         vote_for_ = candidate_name;
         reply.err_msg = "";
         _toFollower();
+        _restartElectionTimeout();
 
     } catch (const std::exception &e) {
         spdlog::error("{}", e.what());

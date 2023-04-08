@@ -63,7 +63,23 @@ private:
     TriggerTimer election_timeout_trigger_;  // 处理ElectionTimeOut
     CycleTimer replicate_cycle_timer_;         // 处理日志复制, 日志复制和心跳包一起处理, 超时时间按心跳时间设定
     CycleTimer apply_cycle_timer_;             // 执行到状态机触发器
-    std::function<void()> election_callback_;
+
+
+    // 模拟网络错误的成员变量
+    bool delay_sending_{false};  // 延迟发送
+    bool delay_replying_{false}; // 延迟回复
+
+
+    // 发送延迟参数
+    bool long_delays_{false};
+    int normal_delay_min_{0};
+    int normal_delay_max_{100};  // 单位: ms
+    int long_delay_min_{0};
+    int long_delay_max_{7000};   // 单位: ms
+
+    // 回复延迟参数
+    int reply_delay_min_{200};
+    int reply_delay_max_{2200};
 
 public:
     explicit Raft(std::string name, uint16_t port);
@@ -76,8 +92,13 @@ public:
 
     std::tuple<int,int,bool> Start(const std::string &msg);
     void Kill();
+    void Recover();
     bool Killed();
+    void SetLongDelay(bool long_delay);
+    void SetSendReliable(bool reliable);
+    void SetReplyReliable(bool reliable);
     std::pair<int ,bool> GetState();
+    std::string GetName() { return name_; }
 //    void Persist();
 //    void ReadPersist();
 

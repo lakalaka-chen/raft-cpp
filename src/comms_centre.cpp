@@ -6,7 +6,7 @@ namespace raft {
 
 CommsCentre::CommsCentre(std::string name, uint16_t port)
     : name_(std::move(name)), port_(port) {
-    rpc_server_ = std::make_shared<Server>("[RPC Server]", port);
+    rpc_server_ = std::make_shared<Server>(name_, port);
 //    rpc_server_->Register("Echo", [](const std::string &recv, std::string &reply){
 //        reply = recv;
 //    });
@@ -83,6 +83,7 @@ bool CommsCentre::Call(const std::string &peer_name, const std::string &method_n
     if (!pipe->second->RecvMsg(&serialized_recv)) {
         return false;
     }
+
 
     return true;
 }
