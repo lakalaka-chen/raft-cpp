@@ -11,7 +11,7 @@ checkOneLeader(const std::vector<RaftPtr> & machines);
 bool
 checkTermsSame(const std::vector<RaftPtr> & machines);
 
-/// 多少个服务器认为index位置的log_entry已经committed
+/// 多少个服务器认为index位置的日志已经committed
 std::pair<int, std::string>
 nCommitted(const std::vector<RaftPtr> & machines, int index);
 
