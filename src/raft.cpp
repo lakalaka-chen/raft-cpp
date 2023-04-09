@@ -422,9 +422,11 @@ void Raft::_replicateHandler() {
                     return;
                 }
                 std::string reply_msg;
+                lock.unlock();
                 if (!sender->RecvMsg(&reply_msg)) {
                     return;
                 }
+                lock.lock();
                 AppendEntriesReply reply;
                 bool ok = AppendEntriesReply::UnSerialization(reply_msg, reply);
                 if (!ok) {
@@ -446,7 +448,9 @@ void Raft::_replicateHandler() {
                 if (reply.success) {
                     raft_ptr->match_index_[reply.server_name] = reply.finished_index;
                     raft_ptr->next_index_[reply.server_name] = reply.finished_index + 1;
+                    spdlog::debug("领导者[{}]正在查看[{}]序号的日志是否可以被提交", raft_ptr->name_, reply.finished_index);
                     if (raft_ptr->_isEnableCommit(reply.finished_index)) {
+                        spdlog::debug("领导者[{}]发现[{}]序号的日志已经可以被提交", raft_ptr->name_, reply.finished_index);
                         raft_ptr->commit_index_ = reply.finished_index;
                     }
                 } else {
@@ -611,7 +615,7 @@ bool Raft::_appendEntries(std::istringstream &is, AppendEntriesReply &reply) {
                 commit_index_ = std::min(leader_committed_index, int(logs_.size())-1);
             }
 
-            spdlog::debug("结点[{}]收到结点[{}]的AppendEntriesRPC, 日志匹配成功, 当前本结点日志数量[{}], committed_index=[{}]", name_, leader_name, logs_.size(), commit_index_);
+            spdlog::debug("结点[{}]收到结点[{}]的AppendEntriesRPC, 日志匹配成功, 当前本结点日志数量[{}], committed_index=[{}], finished_index=[{}]", name_, leader_name, logs_.size(), commit_index_, reply.finished_index);
             election_timeout_trigger_.Reset();
         }
 
@@ -689,7 +693,7 @@ bool Raft::_isEnableCommit(int index) {
     const LogEntry & end_log = logs_.back();
     int n_logs = int(logs_.size());
     if (index < n_logs && commit_index_ < index && logs_[index].term == current_term_) {
-        int count = 0;
+        int count = 1;  // 这里要从1开始, match_index_里面没有存储自己这个结点
         for (auto & it : match_index_) {
             if (it.second >= index) {
                 count ++;

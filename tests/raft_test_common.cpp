@@ -23,6 +23,23 @@ checkOneLeader(const std::vector<RaftPtr> & machines) {
     return {n_leader == 1, leader_ptr};
 }
 
+RaftPtr
+killOneFollower(const std::vector<RaftPtr> & machines) {
+    std::pair<int, bool> state;
+    for (RaftPtr ptr: machines) {
+        if (ptr->Killed()) {
+            continue;
+        }
+        state = ptr->GetState();
+        if (!state.second) {
+            ptr->Kill();
+            return ptr;
+        }
+    }
+    return nullptr;
+}
+
+
 bool checkTermsSame(const std::vector<RaftPtr> & machines) {
     std::set<int> terms;
     std::pair<int, bool> state;

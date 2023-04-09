@@ -21,5 +21,10 @@ nCommitted(const std::vector<RaftPtr> & machines, int index);
 int
 one(const std::vector<RaftPtr> & machines, const std::string &command, int expectedServers);
 
+
+/// 顾名思义
+RaftPtr
+killOneFollower(const std::vector<RaftPtr> & machines);
+
 }
 
