@@ -8,8 +8,8 @@
 #include <atomic>
 #include <thread>
 #include <sstream>
-#include <random>
-#include <future>
+//#include <random>
+//#include <future>
 
 namespace raft {
 
@@ -39,14 +39,14 @@ namespace raft {
  *
  * */
 
-using trigger_timer::Clock;
-
-int GetRandomInt(int min, int max) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<int> dis(min, max);
-    return dis(gen);
-}
+//using trigger_timer::Clock;
+//
+//int GetRandomInt(int min, int max) {
+//    std::random_device rd;
+//    std::mt19937 gen(rd());
+//    std::uniform_int_distribution<int> dis(min, max);
+//    return dis(gen);
+//}
 
 RaftPtr Raft::Make(
         const std::vector<PeerInfo> &peers_info,
@@ -138,7 +138,7 @@ void Raft::AddPeer(const std::string &name, const PeerInfo &peer) {
 }
 
 
-std::tuple<int, int, bool> Raft::Start(const std::string &msg) {
+std::tuple<int, int, bool> Raft::Start(std::string msg) {
     int index = -1;
 
     std::unique_lock<std::mutex> lock(mu_);
@@ -146,9 +146,22 @@ std::tuple<int, int, bool> Raft::Start(const std::string &msg) {
     int term = current_term_;
 
     if (is_leader) {
-        // TODO
+        spdlog::info("领导者[{}]收到客户端一条命令: [{}]", name_, msg);
+        index = logs_.back().index + 1;
+        logs_.emplace_back(LogEntry{index, term, msg});
     }
     return { index, term, is_leader };
+}
+
+std::pair<bool, std::string> Raft::IsCommitted(int index) {
+    std::pair<bool, std::string> result {false, ""};
+    std::unique_lock<std::mutex> lock(mu_);
+    if (index >= int(logs_.size()) || index > commit_index_) {
+        return result;
+    }
+    result.first = true;
+    result.second = logs_[index].command;
+    return result;
 }
 
 void Raft::Kill() {
@@ -356,12 +369,12 @@ void Raft::_replicateHandler() {
             lock.unlock();
             send_threads[i] = std::thread([raft_ptr, sender, args, dst](){ // 心跳包直接发送args就可以了
                 std::string message = args.Serialization();
-//                spdlog::debug("结点[{}]向结点[{}]发送心跳包......", raft_ptr->name_, dst);
+                spdlog::debug("结点[{}]向结点[{}]发送心跳包......", raft_ptr->name_, dst);
                 if (!sender->SendMsg(message)) {
                     spdlog::debug("结点[{}]向结点[{}]发送心跳包失败", raft_ptr->name_, dst);
                     return;
                 }
-                spdlog::debug("结点[{}]向结点[{}]发送心跳包, 数据内容: 「 {}」", raft_ptr->name_, dst, args.String());
+                spdlog::debug("结点[{}]向结点[{}]发送心跳包, 数据内容: [{}]", raft_ptr->name_, dst, args.Serialization());
                 std::string reply_msg;
 
                 if (!sender->RecvMsg(&reply_msg)) {
@@ -392,6 +405,7 @@ void Raft::_replicateHandler() {
             });
         } else {
             const LogEntry & prev_log = logs_[next_index - 1];
+            spdlog::debug("结点[{}]发给结点[{}]的AppendEntries上一条日志是[{}]", name_, peer_pipe.first, prev_log.String());
             int prev_log_index = prev_log.index;
             int prev_log_term = prev_log.term;
             std::string dst = peer_pipe.first;
@@ -402,20 +416,15 @@ void Raft::_replicateHandler() {
             auto raft_ptr = shared_from_this();
             lock.unlock();
             send_threads[i] = std::thread([raft_ptr, dst, sender, args](){
-                // AppendEntriesArgs &做一次拷贝, AppendEntriesArgs拷贝两次
-                // args用拷贝, 防止循环下一轮修改args, 影响到本轮的发送
+                std::unique_lock<std::mutex> lock(raft_ptr->mu_);
                 if (!sender->SendMsg(args.Serialization())) {
                     spdlog::debug("结点[{}]向结点[{}]发送AppendEntries失败", raft_ptr->name_, dst);
                     return;
                 }
                 std::string reply_msg;
-
-
                 if (!sender->RecvMsg(&reply_msg)) {
                     return;
                 }
-
-                std::unique_lock<std::mutex> lock(raft_ptr->mu_);
                 AppendEntriesReply reply;
                 bool ok = AppendEntriesReply::UnSerialization(reply_msg, reply);
                 if (!ok) {
@@ -447,7 +456,6 @@ void Raft::_replicateHandler() {
             });
         }
     }
-//    spdlog::debug("结点[{}]发送了{}条心跳信息", name_, i);
     for (i = 0; i < n_thread; i ++) {
         send_threads[i].detach();
     }
@@ -598,7 +606,12 @@ bool Raft::_appendEntries(std::istringstream &is, AppendEntriesReply &reply) {
             }
             reply.finished_index = logs_.back().index;
             reply.success = true;
-            spdlog::debug("结点[{}]收到结点[{}]的AppendEntriesRPC, 日志匹配成功", name_, leader_name);
+
+            if (leader_committed_index > commit_index_) {
+                commit_index_ = std::min(leader_committed_index, int(logs_.size())-1);
+            }
+
+            spdlog::debug("结点[{}]收到结点[{}]的AppendEntriesRPC, 日志匹配成功, 当前本结点日志数量[{}], committed_index=[{}]", name_, leader_name, logs_.size(), commit_index_);
             election_timeout_trigger_.Reset();
         }
 

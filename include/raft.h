@@ -4,7 +4,7 @@
 #include "log_entry.h"
 #include "append_entries.h"
 #include "request_votes.h"
-//#include "time_utils.h"
+#include "time_utils.h"
 #include "timer/trigger_timer.h"
 
 #include <memory>
@@ -23,7 +23,7 @@ using RaftPtr = std::shared_ptr<Raft>;
 
 using trigger_timer::TriggerTimer;
 using trigger_timer::CycleTimer;
-using trigger_timer::TimePoint;
+//using trigger_timer::TimePoint;
 
 
 class Raft: public CommsCentre, public std::enable_shared_from_this<Raft> {
@@ -90,7 +90,10 @@ public:
     void StartTimers(bool enable_candidate=true);   // 启动计时器
     void AddPeer(const std::string &name, const PeerInfo &peer) override;
 
-    std::tuple<int,int,bool> Start(const std::string &msg);
+    /// 返回值: index, term, is_leader
+    std::tuple<int,int,bool> Start(std::string msg);
+    std::pair<bool, std::string> IsCommitted(int index);
+
     void Kill();
     void Recover();
     bool Killed();

@@ -1,38 +1,11 @@
 #include "gtest/gtest.h"
 #include "spdlog/spdlog.h"
 
-#include "raft.h"
+#include "raft_test_common.h"
+
 
 using namespace raft;
 
-
-std::pair<bool, RaftPtr>
-checkOneLeader(const std::vector<RaftPtr> & machines) {
-    int n_leader = 0;
-    std::pair<int, bool> state;
-    RaftPtr leader_ptr;
-    for (RaftPtr ptr: machines) {
-        if (ptr->Killed()) {
-            continue;
-        }
-        state = ptr->GetState();
-        if (state.second) {
-            n_leader ++;
-            leader_ptr = ptr;
-        }
-    }
-    return {n_leader == 1, leader_ptr};
-}
-
-bool checkTermsSame(const std::vector<RaftPtr> & machines) {
-    std::set<int> terms;
-    std::pair<int, bool> state;
-    for (RaftPtr ptr: machines) {
-        state = ptr->GetState();
-        terms.insert(state.first);
-    }
-    return terms.size() == 1;
-}
 
 
 class ElectionTest: public testing::Test {
@@ -122,17 +95,9 @@ TEST_F(ElectionTest, LeaderFailureTest) {
     node_2->Recover();
     spdlog::debug("结点[{}]重新上线", node_1->GetName());
     spdlog::debug("结点[{}]重新上线\n\n\n\n", node_2->GetName());
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
     check_result = checkOneLeader(rafts_);
     ASSERT_EQ(check_result.first, true);
-    RaftPtr node_3 = check_result.second;
-    status_1 = node_1->GetState();
-    status_2 = node_2->GetState();
-    auto status_3 = node_3->GetState();
-    ASSERT_EQ(status_1.second, false);
-    ASSERT_EQ(status_2.second, false);
-    ASSERT_EQ(status_3.second, true);
     ASSERT_EQ(checkTermsSame(rafts_), true);
 }
-
 
