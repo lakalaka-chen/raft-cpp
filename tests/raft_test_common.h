@@ -26,5 +26,11 @@ one(const std::vector<RaftPtr> & machines, const std::string &command, int expec
 RaftPtr
 killOneFollower(const std::vector<RaftPtr> & machines);
 
+
+/// 等待至少expectServers个服务器提交index号日志
+/// 返回index处的command
+std::string
+configWait(const std::vector<RaftPtr> & machines, int index, int expectServers, int term);
+
 }
 

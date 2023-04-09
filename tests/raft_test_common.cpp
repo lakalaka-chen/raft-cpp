@@ -95,7 +95,7 @@ one(const std::vector<RaftPtr> & machines, const std::string &command, int expec
                 spdlog::debug("有[{}]个结点完成command[{}]的日志复制", commit_result.first, command);
                 if (commit_result.first > 0 && commit_result.first >= expectedServers) {
                     if (commit_result.second == command) {
-                        spdlog::debug("已经超过[{}]个结点完成command[{}]的日志复制, 即将推出本次客户端请求", expectedServers, command);
+                        spdlog::debug("已经超过[{}]个结点完成command[{}]的日志复制, 即将退出本次客户端请求", expectedServers, command);
                         return index;
                     }
                 }
@@ -107,6 +107,36 @@ one(const std::vector<RaftPtr> & machines, const std::string &command, int expec
     }
     spdlog::error("发起一个写请求[{}], 期待[{}]个以上结点提交, 但是过了10秒还是没有达成一致", command, expectedServers);
     return -1;
+}
+
+
+
+std::string configWait(const std::vector<RaftPtr> & machines, int index, int expectServers, int term) {
+
+    int to = 10;
+    for (int iter = 0; iter < 30; iter ++) {
+        auto commit_result = nCommitted(machines, index);
+        if (commit_result.first >= expectServers) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(to));
+        if (to < 1000) {
+            to *= 2;
+        }
+        if (term > -1) {
+//            for (RaftPtr ptr: machines) {
+//                auto raft_status = ptr->GetState();
+//                if (raft_status.first > term) {
+//                    return "-1";
+//                }
+//            }
+        }
+    }
+    auto commit_result = nCommitted(machines, index);
+    if (commit_result.first < expectServers) {
+        spdlog::error("[ConfigWait] 仅仅有[{}]个结点提交{}号日志, 我们期待有[{}]个结点完成提交", commit_result.first, index, expectServers);
+    }
+    return commit_result.second;
 }
 
 

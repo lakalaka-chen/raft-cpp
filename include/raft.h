@@ -100,6 +100,8 @@ public:
     void SetLongDelay(bool long_delay);
     void SetSendReliable(bool reliable);
     void SetReplyReliable(bool reliable);
+
+    /// 返回值: current_term_, is_leader
     std::pair<int ,bool> GetState();
     std::string GetName() { return name_; }
 //    void Persist();

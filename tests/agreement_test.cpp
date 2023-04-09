@@ -3,6 +3,7 @@
 #include "spdlog/spdlog.h"
 
 #include "raft_test_common.h"
+#include "wait_group/wait_group.h"
 
 using namespace raft;
 
@@ -38,7 +39,7 @@ public:
         ASSERT_EQ(true, checkOneLeader(rafts_).first);
         ASSERT_EQ(true, checkTermsSame(rafts_));
     }
-    int n_servers_;
+    int n_servers_{0};
     std::vector<RaftPtr> rafts_;
 };
 
@@ -152,4 +153,118 @@ TEST_F(AgreementTest, NoAgreementTest) {
 
     one(rafts_, "1000", n_servers_);
 
+}
+
+
+TEST_F(AgreementTest, ConcurrentStartTest) {
+    spdlog::set_level(spdlog::level::debug);
+    StartUp(3);
+
+    bool success = false;
+
+    int attempt = 0;
+
+    while (true) {
+        bool breakout = true;
+        for ( ; attempt < 5; attempt ++) {
+            spdlog::debug("第{}次尝试", attempt);
+            if (attempt > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+            }
+            auto check_result = checkOneLeader(rafts_);
+            ASSERT_EQ(check_result.first, true);
+            RaftPtr leader = check_result.second;
+            auto start_result = leader->Start("1");
+            bool ok = std::get<2>(start_result);
+            int term = std::get<1>(start_result);
+            if (!ok) {
+                continue;
+            }
+
+            int iter = 5;
+            std::vector<std::thread> workers(iter);
+
+            std::mutex set_mutex;
+            std::set<int> indexes;
+            wait_group::WaitGroup wg(0);
+
+            for (int ii = 0; ii < iter; ii ++) {
+                wg.Add(1);
+                workers[ii] = std::thread([ii, &wg, leader, term, &indexes, &set_mutex](){
+                    std::string cmd = std::to_string(ii+100);
+                    auto start_result = leader->Start(cmd);
+                    int local_index = std::get<0>(start_result);
+                    int local_term = std::get<1>(start_result);
+                    bool local_ok = std::get<2>(start_result);
+                    if (local_term != term || !local_ok) {
+                        return;
+                    }
+                    {
+                        std::unique_lock<std::mutex> lock(set_mutex);
+                        indexes.insert(local_index);
+                    }
+                    wg.Done();
+                });
+            }
+            spdlog::debug("等待线程完成Start工作");
+            wg.Wait();
+            spdlog::debug("Start工作已完成");
+
+            for (int j = 0; j < n_servers_; j ++) {
+                auto raft_state = rafts_[j]->GetState();
+                int raft_term = raft_state.first;
+                if (raft_term != term) {
+                    breakout = false;
+                    break;
+                }
+            }
+
+            if (!breakout) {
+                continue;
+            }
+
+            bool failed = false;
+            std::vector<std::string> cmds;
+            for (int idx : indexes) {
+                std::string cmd = configWait(rafts_, idx, n_servers_, term);
+                if (cmd == "-1") {
+                    failed = true;
+                    break;
+                }
+                cmds.push_back(cmd);
+            }
+
+
+            for(auto & worker : workers) {
+                if (worker.joinable()) {
+                    worker.join();
+                }
+            }
+
+            for (int ii = 0; ii < iter; ii ++) {
+                int x = 100 + ii;
+                bool ok = false;
+                for (auto & cmd : cmds) {
+                    if (std::stoi(cmd) == x) {
+                        ok = true;
+                    }
+                }
+                ASSERT_EQ(ok, true);
+            }
+
+            success = true;
+            break;
+        }
+
+        if (attempt == 5) {
+            spdlog::error("尝试次数超过极限, 说明Raft集群term变化太频繁");
+            break;
+        }
+
+        if (breakout) {
+            break;
+        }
+    }
+
+    ASSERT_NE(attempt, 5);
 }
