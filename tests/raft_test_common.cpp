@@ -80,6 +80,10 @@ one(const std::vector<RaftPtr> & machines, const std::string &command, int expec
     while (CalcDuration(Clock::now(), t0) < 10000) {
         int index = -1;
         for (RaftPtr ptr: machines) {
+            if (ptr->Killed()) {
+                continue;
+            }
+            spdlog::debug("[One] 尝试在结点[{}]上发起命令[{}]", ptr->GetName(), command);
             start_result = ptr->Start(command);
             if (std::get<2>(start_result)) {
                 index = std::get<0>(start_result);
@@ -123,14 +127,14 @@ std::string configWait(const std::vector<RaftPtr> & machines, int index, int exp
         if (to < 1000) {
             to *= 2;
         }
-        if (term > -1) {
+//        if (term > -1) {
 //            for (RaftPtr ptr: machines) {
 //                auto raft_status = ptr->GetState();
 //                if (raft_status.first > term) {
 //                    return "-1";
 //                }
 //            }
-        }
+//        }
     }
     auto commit_result = nCommitted(machines, index);
     if (commit_result.first < expectServers) {

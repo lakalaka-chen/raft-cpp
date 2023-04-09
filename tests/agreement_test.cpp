@@ -268,3 +268,45 @@ TEST_F(AgreementTest, ConcurrentStartTest) {
 
     ASSERT_NE(attempt, 5);
 }
+
+
+TEST_F(AgreementTest, RejoinAgreementTest) {
+    spdlog::set_level(spdlog::level::debug);
+    StartUp(3);
+
+    int committed_index = one(rafts_, "101", n_servers_);
+    ASSERT_EQ(committed_index, 1);
+
+    auto check_result = checkOneLeader(rafts_);
+    ASSERT_EQ(check_result.first, true);
+    RaftPtr leader = check_result.second;
+    ASSERT_NE(leader, nullptr);
+
+    leader->Kill();
+    spdlog::debug("旧领导者[{}]下线\n\n\n\n", leader->GetName());
+
+    // 给旧领导者发送几条命令
+    leader->Start("102");
+    leader->Start("103");
+    leader->Start("104");
+
+    committed_index = one(rafts_, "103", 2);
+    ASSERT_EQ(committed_index, 2);
+
+    check_result = checkOneLeader(rafts_);
+    ASSERT_EQ(check_result.first, true);
+    RaftPtr new_leader = check_result.second;
+    ASSERT_NE(new_leader, nullptr);
+
+    new_leader->Kill();
+    spdlog::debug("新领导者[{}]下线\n\n\n\n", new_leader->GetName());
+
+    leader->Recover();
+    spdlog::debug("旧领导者[{}]上线\n\n\n\n", leader->GetName());
+
+    committed_index = one(rafts_, "104", 2);
+    ASSERT_EQ(committed_index, 3);
+
+    committed_index = one(rafts_, "105", 2);
+    ASSERT_EQ(committed_index, 4);
+}
