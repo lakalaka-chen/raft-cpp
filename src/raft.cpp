@@ -1,5 +1,6 @@
 
 #include "raft.h"
+#include "serializer.h"
 
 #include "spdlog/spdlog.h"
 
@@ -8,8 +9,7 @@
 #include <atomic>
 #include <thread>
 #include <sstream>
-//#include <random>
-//#include <future>
+
 
 namespace raft {
 
@@ -51,8 +51,9 @@ namespace raft {
 RaftPtr Raft::Make(
         const std::vector<PeerInfo> &peers_info,
         const std::vector<std::string> &peers_name,
-        const std::string &me, uint16_t port) {
-    RaftPtr rf = std::make_shared<Raft>(me, port);
+        const std::string &me, uint16_t port, PersisterPtr persister) {
+    RaftPtr rf = std::make_shared<Raft>(me, port, persister);
+    rf->ReadPersist();  // 读取持久化数据
     int n_peers = int(peers_info.size());
     assert ( n_peers > 0 );
     for (int i = 0; i < n_peers; i ++) {
@@ -64,7 +65,7 @@ RaftPtr Raft::Make(
 }
 
 
-Raft::Raft(std::string name, uint16_t port)
+Raft::Raft(std::string name, uint16_t port, PersisterPtr persister)
     : CommsCentre(std::move(name), port),
       peers_num_(1),
       current_term_(0),
@@ -75,10 +76,59 @@ Raft::Raft(std::string name, uint16_t port)
       dead_(false),
       votes_to_me_(0),
       election_timeout_(GetRandomInt(ElectionTimeoutMin, ElectionTimeoutMax)),
-      heart_beat_timeout_(HeartBeatInterval) {
+      heart_beat_timeout_(HeartBeatInterval),
+      persister_ptr_(std::move(persister)),
+      rpc_count_(0) {
     logs_.push_back(default_empty_log);
     is_running_ = true;
 }
+
+
+void Raft::Persist() {
+
+    if (persister_ptr_ == nullptr) {
+        persister_ptr_ = Persister::MakePersister();
+    }
+
+    int node_size = int(sizeof(current_term_) + vote_for_.size() + sizeof(commit_index_) + sizeof(last_applied_));
+    int n_logs = int(logs_.size());
+    node_size += sizeof(n_logs);
+    Serializer serializer(node_size);
+    serializer.Encode(current_term_);
+    serializer.Encode(vote_for_);
+    serializer.Encode(commit_index_);
+    serializer.Encode(last_applied_);
+    serializer.Encode(n_logs);
+    for (int i = 0; i < n_logs; i ++) {
+        serializer.Encode(logs_[i]);
+    }
+    persister_ptr_->SaveRaftState(serializer.Bytes(), serializer.Size());
+}
+
+
+void Raft::ReadPersist() {
+    if (persister_ptr_ == nullptr) {
+        return;
+    }
+    auto data_vec = persister_ptr_->ReadRaftState();
+    Serializer serializer(data_vec.data(), int(data_vec.size()));
+    serializer.Decode(current_term_);
+    serializer.Decode(vote_for_);
+    serializer.Decode(commit_index_);
+    serializer.Decode(last_applied_);
+    int n_logs = 0;
+    serializer.Decode(n_logs);
+    logs_.resize(n_logs);
+    for (int i = 0; i < n_logs; i ++) {
+        serializer.DecodeObj(logs_[i]);
+    }
+}
+
+
+int Raft::SendCount() const {
+    return rpc_count_.load();
+}
+
 
 Raft::~Raft() {
     std::unique_lock<std::mutex> lock(mu_);
@@ -149,6 +199,7 @@ std::tuple<int, int, bool> Raft::Start(std::string msg) {
         spdlog::info("领导者[{}]收到客户端一条命令: [{}]", name_, msg);
         index = logs_.back().index + 1;
         logs_.emplace_back(LogEntry{index, term, msg});
+        Persist();
     }
     return { index, term, is_leader };
 }
@@ -213,6 +264,8 @@ void Raft::_toCandidate() {
     status_ = RaftStatus::Candidate;
     vote_for_ = name_;
     votes_to_me_ = 1;
+
+    Persist();
 }
 
 /// 这个函数的内容本来应该放在_toCandidate()内部
@@ -234,7 +287,7 @@ void Raft::_toFollower() {
     status_ = RaftStatus::Follower;
     votes_to_me_ = 0;
     vote_for_ = "None";
-
+    Persist();
 //    _restartElectionTimeout();
 }
 
@@ -283,6 +336,7 @@ void Raft::_electionHandler() {
             if (sender == nullptr) {
                 return;
             }
+            raft_ptr->rpc_count_.fetch_add(1, std::memory_order_release);
             if (!sender->SendMsg(message)) {
                 return;
             }
@@ -370,13 +424,13 @@ void Raft::_replicateHandler() {
             send_threads[i] = std::thread([raft_ptr, sender, args, dst](){ // 心跳包直接发送args就可以了
                 std::string message = args.Serialization();
                 spdlog::debug("结点[{}]向结点[{}]发送心跳包......", raft_ptr->name_, dst);
+                raft_ptr->rpc_count_.fetch_add(1, std::memory_order_release);
                 if (!sender->SendMsg(message)) {
                     spdlog::debug("结点[{}]向结点[{}]发送心跳包失败", raft_ptr->name_, dst);
                     return;
                 }
                 spdlog::debug("结点[{}]向结点[{}]发送心跳包, 数据内容: [{}]", raft_ptr->name_, dst, args.Serialization());
                 std::string reply_msg;
-
                 if (!sender->RecvMsg(&reply_msg)) {
                     return;
                 }
@@ -417,6 +471,7 @@ void Raft::_replicateHandler() {
             lock.unlock();
             send_threads[i] = std::thread([raft_ptr, dst, sender, args](){
                 std::unique_lock<std::mutex> lock(raft_ptr->mu_);
+                raft_ptr->rpc_count_.fetch_add(1, std::memory_order_release);
                 if (!sender->SendMsg(args.Serialization())) {
                     spdlog::debug("结点[{}]向结点[{}]发送AppendEntries失败", raft_ptr->name_, dst);
                     return;
@@ -452,6 +507,8 @@ void Raft::_replicateHandler() {
                     if (raft_ptr->_isEnableCommit(reply.finished_index)) {
                         spdlog::debug("领导者[{}]发现[{}]序号的日志已经可以被提交", raft_ptr->name_, reply.finished_index);
                         raft_ptr->commit_index_ = reply.finished_index;
+                        // 持久化
+                        raft_ptr->Persist();
                     }
                 } else {
                     raft_ptr->next_index_[reply.server_name] = reply.conflict_index;
@@ -471,6 +528,9 @@ void Raft::_applyHandler() {
     while (last_applied_ < commit_index_) {
         last_applied_ ++;
         // TODO: apply一条日志
+
+        // 持久化
+        Persist();
     }
 }
 

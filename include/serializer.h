@@ -23,6 +23,7 @@ private:
     ByteOrder byte_order_;
 public:
     Serializer();
+    explicit Serializer(int init_size);
     explicit Serializer(const char *data, int len);
     ~Serializer();
 
@@ -96,6 +97,7 @@ public:
     }
 
     const char* Bytes() { return buf_; }
+    int Size() const { return size_; }
 
 
 private:

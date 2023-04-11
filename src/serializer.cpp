@@ -12,6 +12,16 @@ Serializer::Serializer()
 }
 
 
+
+Serializer::Serializer(int init_size) {
+    byte_order_ = __BYTE_ORDER__ == BIG_ENDIAN ? BigEndian : LittleEndian;
+    buf_ = new char[init_size];
+    size_ = 0;
+    capacity_ = init_size;
+    decode_ptr_ = 0;
+}
+
+
 Serializer::Serializer(const char *data, int len) {
     byte_order_ = __BYTE_ORDER__ == BIG_ENDIAN ? BigEndian : LittleEndian;
     buf_ = new char[len];
@@ -45,7 +55,9 @@ void Serializer::_reserve(int len) {
         }
         char * new_buf = new char[capacity_];
         std::memcpy(new_buf, buf_, size_);
-        delete []buf_;
+        if (buf_ != nullptr && size_ > 0) {
+            delete []buf_;
+        }
         buf_ = new_buf;
     }
 }

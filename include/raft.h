@@ -5,6 +5,7 @@
 #include "append_entries.h"
 #include "request_votes.h"
 #include "time_utils.h"
+#include "persister.h"
 #include "timer/trigger_timer.h"
 
 #include <memory>
@@ -28,14 +29,15 @@ using trigger_timer::CycleTimer;
 
 class Raft: public CommsCentre, public std::enable_shared_from_this<Raft> {
 public:
-    static const int ElectionTimeoutMin = 550;
-    static const int ElectionTimeoutMax = 700;
-    static const int HeartBeatInterval = 150;
+    static const int ElectionTimeoutMin = 200;
+    static const int ElectionTimeoutMax = 400;
+    static const int HeartBeatInterval = 80;
     static const int ApplyInterval = 50;    // 隔多少时间去尝试把committed log提交到状态机
     static RaftPtr Make(
             const std::vector<PeerInfo> &peers_info,
             const std::vector<std::string> &peers_name,
-            const std::string &me, uint16_t port);
+            const std::string &me, uint16_t port,
+            PersisterPtr persister = nullptr);
 private:
     std::mutex mu_;
     bool is_running_;
@@ -81,8 +83,13 @@ private:
     int reply_delay_min_{200};
     int reply_delay_max_{2200};
 
+    // 持久化
+    PersisterPtr persister_ptr_;
+
+    std::atomic<int> rpc_count_;
+
 public:
-    explicit Raft(std::string name, uint16_t port);
+    explicit Raft(std::string name, uint16_t port, PersisterPtr persister=nullptr);
     ~Raft() override;
 
     // 注册RPC服务
@@ -121,8 +128,14 @@ public:
     // 返回值: current_term_, is_leader
     std::pair<int ,bool> GetState();
     std::string GetName() { return name_; }
-//    void Persist();
-//    void ReadPersist();
+
+    // 持久化, 保存Raft结点信息
+    void Persist();
+    // 读取持久化数据
+    void ReadPersist();
+
+    // 返回目前该结点发送了多少个RPC, 暂时只有AppendEntriesRPC和RequestVotesRPC
+    int SendCount() const;
 
 
 

@@ -39,6 +39,28 @@ killOneFollower(const std::vector<RaftPtr> & machines) {
     return nullptr;
 }
 
+void
+killAllServers(const std::vector<RaftPtr> & machines) {
+    std::pair<int, bool> state;
+    for (RaftPtr ptr: machines) {
+        if (ptr->Killed()) {
+            continue;
+        }
+        ptr->Kill();
+    }
+}
+
+
+void
+recoverAllServers(const std::vector<RaftPtr> & machines) {
+    std::pair<int, bool> state;
+    for (RaftPtr ptr: machines) {
+        if (!ptr->Killed()) {
+            continue;
+        }
+        ptr->Recover();
+    }
+}
 
 bool checkTermsSame(const std::vector<RaftPtr> & machines) {
     std::set<int> terms;

@@ -49,4 +49,21 @@ std::string LogEntry::Serialization() const {
 
 
 
+void LogEntry::Encode(Serializer &serializer) const {
+    serializer.EncodeStructureType();
+    serializer.Encode(index);
+    serializer.Encode(term);
+    serializer.Encode(command);
+}
+bool LogEntry::Decode(Serializer &serializer) {
+    if (!serializer.DecodeStructureType()) return false;
+    if (!serializer.Decode(index)) return false;
+    if (!serializer.Decode(term)) return false;
+    if (!serializer.Decode(command)) return false;
+
+    return true;
+}
+
+
+
 }
