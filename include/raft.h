@@ -85,23 +85,40 @@ public:
     explicit Raft(std::string name, uint16_t port);
     ~Raft() override;
 
+    // 注册RPC服务
+    // 确定收到数据包的解析、流程
+    // 打开自己的Rpc服务器
+    // 设置计时器的行为和倒计时
     void SetUp();
 
-    void StartTimers(bool enable_candidate=true);   // 启动计时器
+    // 启动apply计时器
+    // 如果enable_candidate为true, 也会启动election timeout计时器
+    void StartTimers(bool enable_candidate=true);
+
+    // 添加一个结点信息, 但是不会主动发起连接
     void AddPeer(const std::string &name, const PeerInfo &peer) override;
 
-    /// 返回值: index, term, is_leader
+    // 客户端向Raft结点发起一个请求
+    // 返回值: index, term, is_leader
     std::tuple<int,int,bool> Start(std::string msg);
+
+    // 查询index号日志有没有被commit
     std::pair<bool, std::string> IsCommitted(int index);
 
+    // 关闭所有计时器
+    // 不会再发送数据, 收到数据也不会再回复
+    // 模拟结点宕机
     void Kill();
+    // 恢复正常运行
+    // 保持Kill之前的行为; 例如如果之前是Leader, 则恢复后会定时发送心跳; 如果是其他类型结点会开启election timeout计时器; 等等
     void Recover();
     bool Killed();
     void SetLongDelay(bool long_delay);
     void SetSendReliable(bool reliable);
     void SetReplyReliable(bool reliable);
 
-    /// 返回值: current_term_, is_leader
+    // 获取结点状态
+    // 返回值: current_term_, is_leader
     std::pair<int ,bool> GetState();
     std::string GetName() { return name_; }
 //    void Persist();

@@ -15,16 +15,17 @@ using NodeFuture = std::future<CommsCentrePtr>;
 
 TEST(CommsCentreTest, CommunicateTest) {
 
+    spdlog::set_level(spdlog::level::debug);
 
     int N = 8;
-    int base = 1111;
+    int base = 1121;
     std::vector<uint16_t> ports(N);
     std::vector<std::string> names(N);
     std::vector<std::string> send_msgs(N);
 
     for (int i = 0; i < N; i ++) {
         ports[i] = (i+1)*base;
-        names[i] = std::string("node ") + std::to_string(i);
+        names[i] = std::to_string(i);
         send_msgs[i] = std::string("hello, I am ") + names[i];
     }
 

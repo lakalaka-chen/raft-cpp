@@ -23,6 +23,7 @@ private:
     ByteOrder byte_order_;
 public:
     Serializer();
+    explicit Serializer(const char *data, int len);
     ~Serializer();
 
     // 写入数据类型DataType::Structure
