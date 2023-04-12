@@ -39,5 +39,15 @@ recoverAllServers(const std::vector<RaftPtr> & machines);
 std::string
 configWait(const std::vector<RaftPtr> & machines, int index, int expectServers, int term);
 
+
+// crash一个结点然后重新启动, 但是并不会建立客户端连接
+void
+crashAndSetup(std::vector<RaftPtr> &rafts, int idx);
+
+
+// crashAndSetup完整版
+void
+crashRestart(std::vector<RaftPtr> &rafts, int idx);
+
 }
 

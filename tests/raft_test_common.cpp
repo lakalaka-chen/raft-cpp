@@ -20,6 +20,7 @@ checkOneLeader(const std::vector<RaftPtr> & machines) {
             leader_ptr = ptr;
         }
     }
+    spdlog::debug("有{}个领导者", n_leader);
     return {n_leader == 1, leader_ptr};
 }
 
@@ -65,10 +66,13 @@ recoverAllServers(const std::vector<RaftPtr> & machines) {
 bool checkTermsSame(const std::vector<RaftPtr> & machines) {
     std::set<int> terms;
     std::pair<int, bool> state;
+    std::string result;
     for (RaftPtr ptr: machines) {
         state = ptr->GetState();
         terms.insert(state.first);
+        result += std::to_string(state.first) + " ;";
     }
+    spdlog::debug("查看所有结点term: {}", result);
     return terms.size() == 1;
 }
 
@@ -105,7 +109,7 @@ one(const std::vector<RaftPtr> & machines, const std::string &command, int expec
             if (ptr->Killed()) {
                 continue;
             }
-            spdlog::debug("[One] 尝试在结点[{}]上发起命令[{}]", ptr->GetName(), command);
+//            spdlog::debug("[One] 尝试在结点[{}]上发起命令[{}]", ptr->GetName(), command);
             start_result = ptr->Start(command);
             if (std::get<2>(start_result)) {
                 index = std::get<0>(start_result);
@@ -165,5 +169,46 @@ std::string configWait(const std::vector<RaftPtr> & machines, int index, int exp
     return commit_result.second;
 }
 
+
+void crashAndSetup(std::vector<RaftPtr> &rafts, int idx) {
+    RaftMetaInfos meta_info = Raft::Crash(rafts[idx]);
+    meta_info.listen_port = tcp::RandomPort();
+    rafts[idx] = Raft::Make(
+            meta_info.peers_info, meta_info.peers_name,
+            meta_info.me, meta_info.listen_port, meta_info.persister);
+    rafts[idx]->SetUp();
+    for (RaftPtr ptr: rafts) {
+        if (ptr->GetName() == meta_info.me) {
+            continue;
+        }
+        ptr->AddPeer(meta_info.me, {"127.0.0.1", meta_info.listen_port});
+    }
+
+}
+
+
+void
+crashRestart(std::vector<RaftPtr> &rafts, int idx) {
+    RaftMetaInfos meta_info = Raft::Crash(rafts[idx]);
+    meta_info.listen_port = tcp::RandomPort();
+    rafts[idx] = Raft::Make(
+            meta_info.peers_info, meta_info.peers_name,
+            meta_info.me, meta_info.listen_port, meta_info.persister);
+    rafts[idx]->SetUp();
+    for (RaftPtr ptr: rafts) {
+        if (ptr->GetName() == meta_info.me) {
+            continue;
+        }
+        ptr->AddPeer(meta_info.me, {"127.0.0.1", meta_info.listen_port});
+    }
+    for (int i = 0; i < int(rafts.size()); i ++) {
+        if (i == idx) {
+            rafts[i]->ConnectTo();
+            rafts[i]->StartTimers();
+        } else {
+            rafts[i]->ConnectTo(rafts[idx]->GetName());
+        }
+    }
+}
 
 }

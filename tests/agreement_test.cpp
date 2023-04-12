@@ -62,6 +62,7 @@ TEST_F(AgreementTest, BasicAgreementTest) {
         ASSERT_EQ(committed_index, index);
         spdlog::info("达成共识: index=[{}], command=[{}]", index, command);
     }
+    spdlog::info("BasicAgreement Passed");
 }
 
 TEST_F(AgreementTest, AgreementOnOneNodeFailTest) {
@@ -96,6 +97,7 @@ TEST_F(AgreementTest, AgreementOnOneNodeFailTest) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     committed_index = one(rafts_, "107", n_servers_);
     ASSERT_EQ(committed_index, 7);
+    spdlog::info("AgreementOnOneNodeFail Passed");
 };
 
 
@@ -152,7 +154,7 @@ TEST_F(AgreementTest, NoAgreementTest) {
     ASSERT_LE(index, 3);
 
     one(rafts_, "1000", n_servers_);
-
+    spdlog::info("NoAgreement Passed");
 }
 
 
@@ -267,6 +269,7 @@ TEST_F(AgreementTest, ConcurrentStartTest) {
     }
 
     ASSERT_NE(attempt, 5);
+    spdlog::info("ConcurrentStart Passed");
 }
 
 
@@ -309,6 +312,7 @@ TEST_F(AgreementTest, RejoinAgreementTest) {
 
     committed_index = one(rafts_, "105", 2);
     ASSERT_EQ(committed_index, 4);
+    spdlog::info("RejoinAgreement Passed");
 }
 
 
@@ -382,7 +386,7 @@ TEST_F(AgreementTest, BackupTest) {
     spdlog::debug("所有结点即将全部上线\n\n\n\n");
 
     one(rafts_, "601", n_servers_);
-
+    spdlog::info("Backup Passed");
 }
 
 // 这个测试旨在保证不会出现过多的数据包
@@ -472,6 +476,7 @@ TEST_F(AgreementTest, CountTest) {
 
     ASSERT_LE(total3-total2, 3*20);
 
+    spdlog::info("Count Passed");
 }
 
 

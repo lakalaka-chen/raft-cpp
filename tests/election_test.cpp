@@ -55,49 +55,47 @@ TEST_F(ElectionTest, InitialElection) {
 }
 
 
-/*
- * 1. 测试Leader掉线能不能选出新的领导者
- * 2. 测试超过半数结点掉线是不是无法选出领导者
- * */
-TEST_F(ElectionTest, LeaderFailureTest) {
+TEST_F(ElectionTest, ReElection) {
     spdlog::set_level(spdlog::level::debug);
     StartUp(3);
-    std::pair<bool, RaftPtr> check_result = checkOneLeader(rafts_);
-    RaftPtr node_1 = check_result.second;
+
+    spdlog::info("Test: election after network failure...\n");
+
+    auto check_result = checkOneLeader(rafts_);
     ASSERT_EQ(check_result.first, true);
-    node_1->Kill(); // 下线
-    spdlog::debug("结点[{}]下线\n\n\n\n", node_1->GetName());
+    RaftPtr leader1 = check_result.second;
+    ASSERT_NE(leader1, nullptr);
+
+    leader1->Kill();
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     check_result = checkOneLeader(rafts_);
-    RaftPtr node_2 = check_result.second;
     ASSERT_EQ(check_result.first, true);
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    node_1->Recover(); // 重现上线
-    spdlog::debug("结点[{}]重新上线\n\n\n\n", node_1->GetName());
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    auto status_1 = node_1->GetState();
-    auto status_2 = node_2->GetState();
-    ASSERT_EQ(status_1.second, false); // 旧领导者变成Follower
-    ASSERT_EQ(status_2.second, true);  // 新领导者保持不变
-    ASSERT_EQ(checkTermsSame(rafts_), true);
 
-    node_1->Kill();
-    node_2->Kill();
-    spdlog::debug("结点[{}]下线", node_1->GetName());
-    spdlog::debug("结点[{}]下线\n\n\n\n", node_2->GetName());
+    leader1->Recover();
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     check_result = checkOneLeader(rafts_);
-    ASSERT_EQ(check_result.first, false);
-    ASSERT_EQ(check_result.second, nullptr);
+    ASSERT_EQ(check_result.first, true);
+    RaftPtr leader2 = check_result.second;
+    ASSERT_NE(leader2, nullptr);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    node_1->Recover();
-    node_2->Recover();
-    spdlog::debug("结点[{}]重新上线", node_1->GetName());
-    spdlog::debug("结点[{}]重新上线\n\n\n\n", node_2->GetName());
+    leader2->Kill();
+    RaftPtr follower = killOneFollower(rafts_);
+
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
     check_result = checkOneLeader(rafts_);
+    ASSERT_EQ(check_result.first, false);
+
+    follower->Recover();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    check_result = checkOneLeader(rafts_);
     ASSERT_EQ(check_result.first, true);
-    ASSERT_EQ(checkTermsSame(rafts_), true);
+
+    leader2->Recover();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    check_result = checkOneLeader(rafts_);
+    ASSERT_EQ(check_result.first, true);
+
+    spdlog::info("... Passed\n");
+
 }
 

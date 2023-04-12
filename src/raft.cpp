@@ -39,15 +39,6 @@ namespace raft {
  *
  * */
 
-//using trigger_timer::Clock;
-//
-//int GetRandomInt(int min, int max) {
-//    std::random_device rd;
-//    std::mt19937 gen(rd());
-//    std::uniform_int_distribution<int> dis(min, max);
-//    return dis(gen);
-//}
-
 RaftPtr Raft::Make(
         const std::vector<PeerInfo> &peers_info,
         const std::vector<std::string> &peers_name,
@@ -62,6 +53,24 @@ RaftPtr Raft::Make(
     }
 
     return rf;
+}
+
+
+RaftMetaInfos Raft::Crash(RaftPtr raft_node) {
+    RaftMetaInfos meta_infos;
+    {
+        std::unique_lock<std::mutex> lock(raft_node->mu_);
+        meta_infos.me = raft_node->name_;
+        meta_infos.persister = raft_node->persister_ptr_->Copy();
+        for (const auto &it: raft_node->peers_) {
+            meta_infos.peers_info.push_back({it.second.ip, it.second.port});
+            meta_infos.peers_name.push_back(it.first);
+        }
+        meta_infos.listen_port = raft_node->port_;
+    }
+    raft_node->Kill();
+
+    return meta_infos;
 }
 
 
@@ -100,7 +109,7 @@ void Raft::Persist() {
     serializer.Encode(last_applied_);
     serializer.Encode(n_logs);
     for (int i = 0; i < n_logs; i ++) {
-        serializer.Encode(logs_[i]);
+        serializer.EncodeObj(logs_[i]);
     }
     persister_ptr_->SaveRaftState(serializer.Bytes(), serializer.Size());
 }
@@ -122,11 +131,21 @@ void Raft::ReadPersist() {
     for (int i = 0; i < n_logs; i ++) {
         serializer.DecodeObj(logs_[i]);
     }
+    spdlog::debug("结点[{}]读取持久化数据后的状态: ", name_);
+    spdlog::debug("\t\t\t\t term={}, vote_for={}, commit_index={}, last_applied={}, n_logs={}", current_term_, vote_for_, commit_index_, last_applied_, n_logs);
+    for (int i = 0; i < n_logs; i++) {
+        spdlog::debug("\t\t\t\t logs[{}]={}", i, logs_[i].String());
+    }
 }
 
 
 int Raft::SendCount() const {
     return rpc_count_.load();
+}
+
+
+bool Raft::IsRpcServerRunning() const {
+    return rpc_server_->IsRunning();
 }
 
 
@@ -178,13 +197,21 @@ void Raft::StartTimers(bool enable_candidate) {
 
 
 void Raft::AddPeer(const std::string &name, const PeerInfo &peer) {
+    std::unique_lock<std::mutex> lock(mu_);
     if (name == name_) {
         return;
     }
+    if (peers_.find(name) == peers_.end()) {
+        peers_num_ ++;
+    }
     CommsCentre::AddPeer(name, peer);
-    next_index_.insert({name, 0});
+    if (status_ == RaftStatus::Leader) {
+        next_index_.insert({name, int(logs_.size())});
+    } else {
+        next_index_.insert({name, 0});
+    }
     match_index_.insert({name, 0});
-    peers_num_ ++;
+
 }
 
 
@@ -272,10 +299,11 @@ void Raft::_toCandidate() {
 /// 结点变成Candidate之后, RequestVotes还没发完
 /// 又超时了
 /// 所以改变策略, 等发完了再执行这个函数的操作
-void Raft::_restartElectionTimeout() {
+void Raft::_restartElectionTimeout(int wait_time) {
     // 启动一个新的election_timeout_trigger_
     election_timeout_trigger_.Stop();
     election_timeout_ = GetRandomInt(ElectionTimeoutMin, ElectionTimeoutMax);
+    election_timeout_ += wait_time;
     election_timeout_trigger_.SetUpTimeout(election_timeout_);
     election_timeout_trigger_.Start();
     // 关闭replicate_cycle_timer_
@@ -357,12 +385,13 @@ void Raft::_electionHandler() {
                     raft_ptr->_restartElectionTimeout();
                 } else if (reply.vote_granted) {
                     raft_ptr->votes_to_me_ ++;
+                    spdlog::debug("结点[{}]收到结点[{}]的肯定投票, 现在有{}票, 一共有{}个结点", raft_ptr->name_, dst, raft_ptr->votes_to_me_, raft_ptr->peers_num_);
                     if (raft_ptr->votes_to_me_ * 2 > raft_ptr->peers_num_) {
                         spdlog::debug("结点[{}]收到多数派投票, 成为领导者, 任期号{}", raft_ptr->name_, raft_ptr->current_term_);
                         raft_ptr->_toLeader();
                     }
                 } else {
-                    spdlog::error("结点[{}]竞选失败, err_msg= {}", raft_ptr->name_, reply.err_msg);
+                    spdlog::debug("结点[{}]竞选失败, err_msg= {}", raft_ptr->name_, reply.err_msg);
                 }
             }
 
@@ -470,18 +499,17 @@ void Raft::_replicateHandler() {
             auto raft_ptr = shared_from_this();
             lock.unlock();
             send_threads[i] = std::thread([raft_ptr, dst, sender, args](){
-                std::unique_lock<std::mutex> lock(raft_ptr->mu_);
                 raft_ptr->rpc_count_.fetch_add(1, std::memory_order_release);
                 if (!sender->SendMsg(args.Serialization())) {
                     spdlog::debug("结点[{}]向结点[{}]发送AppendEntries失败", raft_ptr->name_, dst);
                     return;
                 }
                 std::string reply_msg;
-                lock.unlock();
                 if (!sender->RecvMsg(&reply_msg)) {
                     return;
-                }
-                lock.lock();
+                } // 使用std::future::wait_for等待1秒钟
+
+                std::unique_lock<std::mutex> lock(raft_ptr->mu_);
                 AppendEntriesReply reply;
                 bool ok = AppendEntriesReply::UnSerialization(reply_msg, reply);
                 if (!ok) {
@@ -630,6 +658,7 @@ bool Raft::_appendEntries(std::istringstream &is, AppendEntriesReply &reply) {
             reply.finished_index = -1;
             reply.conflict_index = -1;
             spdlog::debug("结点[{}]收到结点[{}]的AppendEntriesRPC, 发现结点[{}]term过期", name_, leader_name, term);
+            Persist();
             return true;  // 解析成功
         }
 
@@ -674,7 +703,7 @@ bool Raft::_appendEntries(std::istringstream &is, AppendEntriesReply &reply) {
             if (leader_committed_index > commit_index_) {
                 commit_index_ = std::min(leader_committed_index, int(logs_.size())-1);
             }
-
+            Persist();
             spdlog::debug("结点[{}]收到结点[{}]的AppendEntriesRPC, 日志匹配成功, 当前本结点日志数量[{}], committed_index=[{}], finished_index=[{}]", name_, leader_name, logs_.size(), commit_index_, reply.finished_index);
             election_timeout_trigger_.Reset();
         }
@@ -709,7 +738,7 @@ bool Raft::_requestVotes(std::istringstream &is, RequestVoteReply &reply) {
             return true;
         }
 
-        if (current_term_ == term || ( current_term_ == term && vote_for_ == "None" ) ) {
+        if (current_term_ > term || ( current_term_ == term && vote_for_ != "None" ) ) {
             reply.term = current_term_;
             reply.vote_granted = false;
             reply.err_msg = "竞选者term落后";

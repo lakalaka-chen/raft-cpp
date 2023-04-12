@@ -27,6 +27,15 @@ using trigger_timer::CycleTimer;
 //using trigger_timer::TimePoint;
 
 
+struct RaftMetaInfos {
+    std::vector<PeerInfo> peers_info;
+    std::vector<std::string> peers_name;
+    std::string me;
+    uint16_t listen_port{0};
+    PersisterPtr persister{nullptr};
+};
+
+
 class Raft: public CommsCentre, public std::enable_shared_from_this<Raft> {
 public:
     static const int ElectionTimeoutMin = 200;
@@ -38,6 +47,10 @@ public:
             const std::vector<std::string> &peers_name,
             const std::string &me, uint16_t port,
             PersisterPtr persister = nullptr);
+    // 直接杀死一个Raft结点
+    // 与Kill不同的是, Kill只是暂停所有行为, 不会关闭和客户端/服务器的连接
+    // （可能Kill这个名字不合适）
+    static RaftMetaInfos Crash(RaftPtr raft_node);
 private:
     std::mutex mu_;
     bool is_running_;
@@ -137,6 +150,9 @@ public:
     // 返回目前该结点发送了多少个RPC, 暂时只有AppendEntriesRPC和RequestVotesRPC
     int SendCount() const;
 
+    // 查看结点的RPC服务器是否在运行状态
+    bool IsRpcServerRunning() const;
+
 
 
 protected:
@@ -144,7 +160,7 @@ protected:
     void _toFollower();
     void _toLeader();
 
-    void _restartElectionTimeout();
+    void _restartElectionTimeout(int wait_time=0);
 
 
     void _electionHandler();
