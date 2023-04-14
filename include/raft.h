@@ -81,8 +81,8 @@ private:
 
 
     // 模拟网络错误的成员变量
-    bool delay_sending_{false};  // 延迟发送
-    bool delay_replying_{false}; // 延迟回复
+    bool send_unreliable{false};  // 延迟发送
+    bool reply_unreliable{false}; // 延迟回复
 
 
     // 发送延迟参数
@@ -93,8 +93,8 @@ private:
     int long_delay_max_{7000};   // 单位: ms
 
     // 回复延迟参数
-    int reply_delay_min_{200};
-    int reply_delay_max_{2200};
+    int reply_delay_min_{0};
+    int reply_delay_max_{100};
 
     // 持久化
     PersisterPtr persister_ptr_;
@@ -134,8 +134,8 @@ public:
     void Recover();
     bool Killed();
     void SetLongDelay(bool long_delay);
-    void SetSendReliable(bool reliable);
-    void SetReplyReliable(bool reliable);
+    void SetSendUnreliable(bool reliable);
+    void SetReplyUnreliable(bool reliable);
 
     // 获取结点状态
     // 返回值: current_term_, is_leader

@@ -270,14 +270,14 @@ void Raft::SetLongDelay(bool long_delay) {
     long_delays_ = long_delay;
 }
 
-void Raft::SetSendReliable(bool reliable) {
+void Raft::SetSendUnreliable(bool reliable) {
     std::unique_lock<std::mutex> lock(mu_);
-    delay_sending_ = reliable;
+    send_unreliable = reliable;
 }
 
-void Raft::SetReplyReliable(bool reliable) {
+void Raft::SetReplyUnreliable(bool reliable) {
     std::unique_lock<std::mutex> lock(mu_);
-    delay_replying_ = reliable;
+    reply_unreliable = reliable;
 }
 
 std::pair<int, bool> Raft::GetState()  {
@@ -416,13 +416,8 @@ void Raft::_replicateHandler() {
         return;
     }
 
-    if (!delay_sending_) { // 随机睡眠一段时间再发心跳包
-        int ms = 0;
-        if (long_delays_) {
-            ms = GetRandomInt(long_delay_min_, long_delay_max_);
-        } else {
-            ms = GetRandomInt(normal_delay_min_, normal_delay_max_);
-        }
+    if (!send_unreliable) { // 随机睡眠一段时间再发心跳包
+        int ms = GetRandomInt(normal_delay_min_, normal_delay_max_);
         std::this_thread::sleep_for(std::chrono::milliseconds(ms));
     }
 
@@ -589,8 +584,13 @@ void Raft::_installReceiveHandler() {
         std::string package_name;
         is >> package_name;
 
-        if (raft_ptr->delay_replying_) {
-            int ms = GetRandomInt(raft_ptr->reply_delay_min_, raft_ptr->reply_delay_max_);
+        if (raft_ptr->reply_unreliable) {
+            int ms = 0;
+            if (raft_ptr->long_delays_) {
+                ms = GetRandomInt(raft_ptr->long_delay_min_, raft_ptr->long_delay_max_);
+            } else {
+                ms = GetRandomInt(raft_ptr->reply_delay_min_, raft_ptr->reply_delay_max_);
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(ms));
         }
 
