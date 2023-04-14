@@ -131,11 +131,11 @@ void Raft::ReadPersist() {
     for (int i = 0; i < n_logs; i ++) {
         serializer.DecodeObj(logs_[i]);
     }
-    spdlog::debug("结点[{}]读取持久化数据后的状态: ", name_);
-    spdlog::debug("\t\t\t\t term={}, vote_for={}, commit_index={}, last_applied={}, n_logs={}", current_term_, vote_for_, commit_index_, last_applied_, n_logs);
-    for (int i = 0; i < n_logs; i++) {
-        spdlog::debug("\t\t\t\t logs[{}]={}", i, logs_[i].String());
-    }
+//    spdlog::debug("结点[{}]读取持久化数据后的状态: ", name_);
+//    spdlog::debug("\t\t\t\t term={}, vote_for={}, commit_index={}, last_applied={}, n_logs={}", current_term_, vote_for_, commit_index_, last_applied_, n_logs);
+//    for (int i = 0; i < n_logs; i++) {
+//        spdlog::debug("\t\t\t\t logs[{}]={}", i, logs_[i].String());
+//    }
 }
 
 
@@ -384,6 +384,10 @@ void Raft::_electionHandler() {
                     raft_ptr->_toFollower();
                     raft_ptr->_restartElectionTimeout();
                 } else if (reply.vote_granted) {
+                    if (raft_ptr->status_ == RaftStatus::Leader) {
+                        spdlog::debug("结点[{}]收到结点[{}]的肯定投票, 不过已经是领导者了", raft_ptr->name_, dst);
+                        return;
+                    }
                     raft_ptr->votes_to_me_ ++;
                     spdlog::debug("结点[{}]收到结点[{}]的肯定投票, 现在有{}票, 一共有{}个结点", raft_ptr->name_, dst, raft_ptr->votes_to_me_, raft_ptr->peers_num_);
                     if (raft_ptr->votes_to_me_ * 2 > raft_ptr->peers_num_) {
